@@ -118,6 +118,18 @@ pub struct DbConfig {
     pub db_name: String,
 }
 
+fn format_oracle_error(e: oracle::Error) -> String {
+    let msg = e.to_string();
+    if msg.contains("DPI-1047") {
+        format!(
+            "{}\n\n[対応方法]\nOracle Instant Clientが見つかりません。以下よりダウンロードして解凍後、ディレクトリのパスをシステムの環境変数 PATH に追加してください。\nhttps://www.oracle.com/database/technologies/instant-client/downloads.html\n\n※64-bit版アプリには64-bit版のClientが、32-bit版アプリには32-bit版のClientが必要です。",
+            msg
+        )
+    } else {
+        msg
+    }
+}
+
 #[tauri::command]
 async fn fetch_db_metadata(
     config: DbConfig,
@@ -234,7 +246,7 @@ async fn fetch_oracle_metadata(config: DbConfig) -> Result<Vec<TableMetadata>, S
     tokio::task::spawn_blocking(move || {
         let conn_str = format!("//{}:{}/{}", config.host, config.port, config.db_name);
         let conn = oracle::Connection::connect(&config.user, &config.pass, &conn_str)
-            .map_err(|e| format!("Failed to connect to Oracle: {}", e))?;
+            .map_err(|e| format!("Failed to connect to Oracle: {}", format_oracle_error(e)))?;
 
         let sql = r#"
             SELECT 
@@ -424,7 +436,8 @@ async fn fetch_db_catalog(config: DbConfig) -> Result<Vec<DbObject>, String> {
         "oracle" => {
             tokio::task::spawn_blocking(move || {
                 let conn_str = format!("//{}:{}/{}", config.host, config.port, config.db_name);
-                let conn = oracle::Connection::connect(&config.user, &config.pass, &conn_str).map_err(|e| e.to_string())?;
+                let conn = oracle::Connection::connect(&config.user, &config.pass, &conn_str)
+                    .map_err(|e| format_oracle_error(e))?;
 
                 let query = "SELECT OBJECT_NAME, OBJECT_TYPE FROM USER_OBJECTS WHERE OBJECT_TYPE IN ('TABLE', 'VIEW', 'SYNONYM', 'PROCEDURE', 'FUNCTION', 'PACKAGE') ORDER BY OBJECT_TYPE, OBJECT_NAME";
                 let mut stmt = conn.statement(query).build().map_err(|e| e.to_string())?;
@@ -494,7 +507,7 @@ async fn execute_db_query(
                             let mut c = oracle::Connection::connect(&config_clone.user, &config_clone.pass, &conn_str)?;
                             c.set_autocommit(false);
                             Ok::<_, oracle::Error>(c)
-                        }).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+                        }).await.map_err(|e| e.to_string())?.map_err(|e| format_oracle_error(e))?;
                         DbSession::Oracle(Arc::new(StdMutex::new(conn)), config.clone())
                     },
                     _ => return Err("Unsupported database type".to_string()),
