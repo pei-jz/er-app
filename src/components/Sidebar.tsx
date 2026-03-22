@@ -62,13 +62,15 @@ const Sidebar: React.FC<SidebarProps> = ({
             </div>
 
             <div className="grid grid-cols-2 gap-1 p-1.5 bg-neutral-900 mx-3 mt-4 rounded-xl shadow-inner border border-neutral-700/50">
-                <button
-                    className={`py-1.5 px-1 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all duration-300 ${currentView === 'diagram' ? 'bg-neutral-700 text-white shadow-lg' : 'text-neutral-500 hover:text-neutral-300'
-                        }`}
-                    onClick={() => setCurrentView('diagram')}
-                >
-                    Diagram
-                </button>
+                {appMode !== 'db' && (
+                    <button
+                        className={`py-1.5 px-1 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all duration-300 ${currentView === 'diagram' ? 'bg-neutral-700 text-white shadow-lg' : 'text-neutral-500 hover:text-neutral-300'
+                            }`}
+                        onClick={() => setCurrentView('diagram')}
+                    >
+                        Diagram
+                    </button>
+                )}
                 <button
                     className={`py-1.5 px-1 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all duration-300 ${currentView === 'metadata' ? 'bg-neutral-700 text-white shadow-lg' : 'text-neutral-500 hover:text-neutral-300'
                         }`}
@@ -97,7 +99,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-8">
                 <div className="space-y-6">
                     {/* Diagram Specific Controls */}
-                    {currentView === 'diagram' && (
+                    {currentView === 'diagram' && appMode !== 'db' && (
                         <div className="space-y-3">
                             <h2 className="text-[10px] font-black text-neutral-500 uppercase tracking-widest flex items-center gap-2 px-1">
                                 <Maximize2 size={10} className="text-yellow-500" />
@@ -203,40 +205,42 @@ const Sidebar: React.FC<SidebarProps> = ({
                     )}
 
                     {/* Navigation Tree */}
-                    <div className="space-y-3">
-                        <div className="flex items-center justify-between px-1">
-                            <h2 className="text-[10px] font-black text-neutral-500 uppercase tracking-widest flex items-center gap-2">
-                                <LayoutGrid size={10} className="text-yellow-500" />
-                                Areas Explorer
-                            </h2>
-                            {selectedCategoryId && (
+                    {appMode !== 'db' && (
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                                <h2 className="text-[10px] font-black text-neutral-500 uppercase tracking-widest flex items-center gap-2">
+                                    <LayoutGrid size={10} className="text-yellow-500" />
+                                    Areas Explorer
+                                </h2>
+                                {selectedCategoryId && (
+                                    <button
+                                        onClick={() => onSelectCategory(null)}
+                                        className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors font-black uppercase"
+                                    >
+                                        Reset View
+                                    </button>
+                                )}
+                            </div>
+                            <div className="space-y-1">
                                 <button
                                     onClick={() => onSelectCategory(null)}
-                                    className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors font-black uppercase"
+                                    className={`w-full flex items-center gap-3 px-3 py-2 text-xs rounded-xl transition-all ${!selectedCategoryId ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-bold' : 'text-neutral-400 hover:bg-neutral-700/50'
+                                        }`}
                                 >
-                                    Reset View
+                                    <Home size={14} />
+                                    World Map
                                 </button>
-                            )}
-                        </div>
-                        <div className="space-y-1">
-                            <button
-                                onClick={() => onSelectCategory(null)}
-                                className={`w-full flex items-center gap-3 px-3 py-2 text-xs rounded-xl transition-all ${!selectedCategoryId ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-bold' : 'text-neutral-400 hover:bg-neutral-700/50'
-                                    }`}
-                            >
-                                <Home size={14} />
-                                World Map
-                            </button>
-                            <div className="mt-2 border-l border-neutral-700/50 ml-2">
-                                <CategoryTree
-                                    categories={data.categories}
-                                    onSelect={onSelectCategory}
-                                    selectedId={selectedCategoryId}
-                                    onEdit={onEditCategory}
-                                />
+                                <div className="mt-2 border-l border-neutral-700/50 ml-2">
+                                    <CategoryTree
+                                        categories={data.categories}
+                                        onSelect={onSelectCategory}
+                                        selectedId={selectedCategoryId}
+                                        onEdit={onEditCategory}
+                                    />
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    )}
                 </div>
             </div>
 

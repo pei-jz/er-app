@@ -49,7 +49,7 @@ export default function WelcomeScreen({ onStartDesign, onStartDbConnect, onOpenL
                         </div>
                         <h2 className="text-lg font-bold mb-2">Live DB Mode</h2>
                         <p className="text-xs text-neutral-500 leading-relaxed mb-4 flex-1">
-                            Connect to a running database to generate the ER diagram and execute real-time SQL queries.
+                            Connect to a running database to browse technical metadata and execute real-time SQL queries.
                         </p>
                         <div className="text-xs font-bold text-emerald-400 flex items-center gap-1 mt-auto">
                             Connect Database <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />

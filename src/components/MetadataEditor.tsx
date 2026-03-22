@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { useErData } from '../hooks/useErData';
+import { useErSqlActions } from '../hooks/useErData';
 import { ErDiagramData, ColumnMetadata, MetadataSettings, TableMetadata, DbConfig } from '../types/er';
 import { Table, List, Settings as SettingsIcon, Search, ArrowRight, Database, Layers, CheckCircle2, Edit3, GitCommit, Terminal } from 'lucide-react';
 import { invoke } from "@tauri-apps/api/core";
@@ -12,6 +12,7 @@ interface MetadataEditorProps {
     onShowInEr: (tableName: string) => void;
     onOpenSchemaChange: (tableName?: string) => void;
     onSwitchToSql: () => void;
+    appMode: 'design' | 'db' | 'welcome';
 }
 
 interface DbObject {
@@ -22,17 +23,23 @@ interface DbObject {
 type EditorTab = 'tables' | 'columns' | 'indices' | 'procedures' | 'functions' | 'synonyms' | 'packages';
 
 const MetadataEditor: React.FC<MetadataEditorProps> = ({
-    data, dbConfig, onShowInEr, onOpenSchemaChange, onSwitchToSql,
+    data, dbConfig, onShowInEr, onOpenSchemaChange, onSwitchToSql, appMode,
     initialTab = 'tables', initialSearch = ''
 }) => {
     const [activeTab, setActiveTab] = useState<EditorTab>(initialTab);
     const [searchTerm, setSearchTerm] = useState(initialSearch);
+    const [page, setPage] = useState(1);
+    const PAGE_SIZE = 50;
     const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
     const [catalog, setCatalog] = useState<DbObject[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [contextMenu, setContextMenu] = useState<{ x: number, y: number, tableName: string } | null>(null);
     const [colContextMenu, setColContextMenu] = useState<{ x: number, y: number, tableName: string, colName: string } | null>(null);
-    const { addSqlTab } = useErData();
+    const { addSqlTab } = useErSqlActions();
+
+    useEffect(() => {
+        setPage(1); // Reset page on tab or search change
+    }, [activeTab, searchTerm]);
 
     useEffect(() => {
         if (initialTab) setActiveTab(initialTab);
@@ -62,6 +69,42 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
             (t.comment || '').toLowerCase().includes(searchTerm.toLowerCase())
         );
     }, [data.tables, searchTerm]);
+
+    const paginatedTables = useMemo(() => {
+        const start = (page - 1) * PAGE_SIZE;
+        return filteredTables.slice(start, start + PAGE_SIZE);
+    }, [filteredTables, page]);
+
+    const filteredTablesForColumns = useMemo(() => {
+        return data.tables.filter(t => t.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            t.columns.some(c => c.name.toLowerCase().includes(searchTerm.toLowerCase())));
+    }, [data.tables, searchTerm]);
+
+    const paginatedTablesForColumns = useMemo(() => {
+        const start = (page - 1) * PAGE_SIZE;
+        return filteredTablesForColumns.slice(start, start + PAGE_SIZE);
+    }, [filteredTablesForColumns, page]);
+
+    const filteredTablesForIndices = useMemo(() => {
+        return data.tables.filter(t => t.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            (t.indices || []).some(idx => idx.name.toLowerCase().includes(searchTerm.toLowerCase())));
+    }, [data.tables, searchTerm]);
+
+    const paginatedTablesForIndices = useMemo(() => {
+        const start = (page - 1) * PAGE_SIZE;
+        return filteredTablesForIndices.slice(start, start + PAGE_SIZE);
+    }, [filteredTablesForIndices, page]);
+
+    const filteredCatalog = useMemo(() => {
+        return catalog
+            .filter((o: DbObject) => o.object_type.toLowerCase() === activeTab.slice(0, -1).replace('proc', 'procedure').replace('func', 'function'))
+            .filter((o: DbObject) => o.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    }, [catalog, activeTab, searchTerm]);
+
+    const paginatedCatalog = useMemo(() => {
+        const start = (page - 1) * PAGE_SIZE;
+        return filteredCatalog.slice(start, start + PAGE_SIZE);
+    }, [filteredCatalog, page]);
 
     const settings = data.settings || {
         showTableComment: true,
@@ -219,7 +262,8 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
             {/* Content Area */}
             <div className="flex-1 overflow-auto p-6 scroll-smooth">
                 {activeTab === 'tables' && (
-                    <div className="grid grid-cols-1 gap-4">
+                    <div className="bg-neutral-800/20 rounded-2xl border border-neutral-800/50 overflow-hidden shadow-2xl transition-opacity">
+                        <Pagination total={filteredTables.length} page={page} setPage={setPage} pageSize={PAGE_SIZE} />
                         <table className="w-full text-left border-collapse">
                             <thead>
                                 <tr className="text-[10px] uppercase tracking-widest text-neutral-500 border-b border-neutral-800">
@@ -233,7 +277,7 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-neutral-800/50">
-                                {filteredTables.map((t) => (
+                                {paginatedTables.map((t) => (
                                     <tr
                                         key={t.name}
                                         onClick={() => setSelectedRowId(t.name)}
@@ -288,13 +332,15 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
                                         )}
                                         <td className="px-4 py-2 text-right">
                                             <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <button
-                                                    onClick={(e) => { e.stopPropagation(); onShowInEr(t.name); }}
-                                                    className="p-1 text-emerald-400 hover:bg-emerald-400/10 rounded-lg transition-all"
-                                                    title="Show in ER Diagram"
-                                                >
-                                                    <ArrowRight size={14} />
-                                                </button>
+                                                {appMode !== 'db' && (
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); onShowInEr(t.name); }}
+                                                        className="p-1 text-emerald-400 hover:bg-emerald-400/10 rounded-lg transition-all"
+                                                        title="Show in ER Diagram"
+                                                    >
+                                                        <ArrowRight size={14} />
+                                                    </button>
+                                                )}
                                                 <button
                                                     onClick={(e) => { e.stopPropagation(); onOpenSchemaChange(t.name); }}
                                                     className="p-1 text-blue-400 hover:bg-blue-400/10 rounded-lg transition-all flex items-center gap-1 px-2"
@@ -309,13 +355,14 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
                                 ))}
                             </tbody>
                         </table>
+                        <Pagination total={filteredTables.length} page={page} setPage={setPage} pageSize={PAGE_SIZE} />
                     </div>
                 )}
 
                 {activeTab === 'columns' && (
                     <div className="space-y-8">
-                        {data.tables.filter(t => t.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                            t.columns.some(c => c.name.toLowerCase().includes(searchTerm.toLowerCase()))).map(table => (
+                        <Pagination total={filteredTablesForColumns.length} page={page} setPage={setPage} pageSize={PAGE_SIZE} />
+                        {paginatedTablesForColumns.map(table => (
                                 <TableColumnsView
                                     key={table.name}
                                     table={table}
@@ -326,13 +373,14 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
                                     onColContextMenu={handleColContextMenu}
                                 />
                             ))}
+                        <Pagination total={filteredTablesForColumns.length} page={page} setPage={setPage} pageSize={PAGE_SIZE} />
                     </div>
                 )}
 
                 {activeTab === 'indices' && (
                     <div className="space-y-8">
-                        {data.tables.filter(t => t.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                            (t.indices || []).some(idx => idx.name.toLowerCase().includes(searchTerm.toLowerCase()))).map(table => (
+                        <Pagination total={filteredTablesForIndices.length} page={page} setPage={setPage} pageSize={PAGE_SIZE} />
+                        {paginatedTablesForIndices.map(table => (
                                 <TableIndicesView
                                     key={table.name}
                                     table={table}
@@ -340,16 +388,15 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
                                     onEdit={() => onOpenSchemaChange(table.name)}
                                 />
                             ))}
+                        <Pagination total={filteredTablesForIndices.length} page={page} setPage={setPage} pageSize={PAGE_SIZE} />
                     </div>
                 )}
 
                 {['procedures', 'functions', 'synonyms', 'packages'].includes(activeTab) && (
                     <div className={`bg-neutral-800/20 rounded-2xl p-6 border border-neutral-800/50 transition-opacity ${isLoading ? 'opacity-50 pointer-events-none' : ''}`}>
+                        <Pagination total={filteredCatalog.length} page={page} setPage={setPage} pageSize={PAGE_SIZE} />
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                            {catalog
-                                .filter((o: DbObject) => o.object_type.toLowerCase() === activeTab.slice(0, -1).replace('proc', 'procedure').replace('func', 'function'))
-                                .filter((o: DbObject) => o.name.toLowerCase().includes(searchTerm.toLowerCase()))
-                                .map((obj: DbObject) => (
+                            {paginatedCatalog.map((obj: DbObject) => (
                                     <div key={obj.name} className="flex items-center gap-3 p-3 bg-neutral-900/50 rounded-xl border border-neutral-800 hover:border-blue-500/50 transition-all group">
                                         <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400 group-hover:scale-110 transition-transform">
                                             {activeTab === 'procedures' && <Terminal size={14} />}
@@ -364,12 +411,13 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
                                     </div>
                                 ))}
                         </div>
-                        {catalog.filter(o => o.object_type.toLowerCase() === activeTab.slice(0, -1).replace('proc', 'procedure').replace('func', 'function')).length === 0 && (
+                        {filteredCatalog.length === 0 && (
                             <div className="py-20 text-center">
                                 <Search size={32} className="mx-auto text-neutral-700 mb-2 opacity-20" />
                                 <p className="text-neutral-500 text-sm">No {activeTab} found in this database.</p>
                             </div>
                         )}
+                        <Pagination total={filteredCatalog.length} page={page} setPage={setPage} pageSize={PAGE_SIZE} />
                     </div>
                 )}
             </div>
@@ -387,13 +435,15 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
                         <Terminal size={12} />
                         Generate INSERT
                     </button>
-                    <button
-                        onClick={() => { onShowInEr(contextMenu.tableName); closeContextMenu(); }}
-                        className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white transition-colors flex items-center gap-2"
-                    >
-                        <ArrowRight size={12} />
-                        Show in ER
-                    </button>
+                    {appMode !== 'db' && (
+                        <button
+                            onClick={() => { onShowInEr(contextMenu.tableName); closeContextMenu(); }}
+                            className="w-full text-left px-4 py-2 hover:bg-blue-600 hover:text-white transition-colors flex items-center gap-2"
+                        >
+                            <ArrowRight size={12} />
+                            Show in ER
+                        </button>
+                    )}
                 </div>
             )}
 
@@ -634,4 +684,33 @@ const TagBadge: React.FC<{ label: string; color: string }> = ({ label, color }) 
     </span>
 );
 
-export default MetadataEditor;
+const Pagination: React.FC<{ total: number; page: number; setPage: (p: number | ((prev: number) => number)) => void; pageSize: number }> = ({ total, page, setPage, pageSize }) => {
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (total === 0) return null;
+    return (
+        <div className="flex justify-between items-center py-4 px-2 my-2 bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden shadow-lg">
+            <div className="text-xs text-neutral-500 font-medium ml-4">
+                Showing {Math.min((page - 1) * pageSize + 1, total)} to {Math.min(page * pageSize, total)} of <span className="text-neutral-300 font-bold">{total}</span>
+            </div>
+            <div className="flex items-center gap-2 mr-4">
+                <button
+                    disabled={page === 1}
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded-lg disabled:opacity-30 disabled:hover:bg-neutral-800 text-xs font-bold text-neutral-300 transition-colors"
+                >Prev</button>
+                <span className="text-xs text-neutral-500 font-bold mx-2">
+                    <span className="text-neutral-200">{page}</span> / {totalPages}
+                </span>
+                <button
+                    disabled={page === totalPages}
+                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                    className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 rounded-lg disabled:opacity-30 disabled:hover:bg-neutral-800 text-xs font-bold text-neutral-300 transition-colors"
+                >Next</button>
+            </div>
+        </div>
+    );
+};
+
+export default React.memo(MetadataEditor, (prev, next) => {
+    return prev.data === next.data && prev.dbConfig === next.dbConfig && prev.initialTab === next.initialTab && prev.initialSearch === next.initialSearch;
+});

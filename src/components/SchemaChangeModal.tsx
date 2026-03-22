@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useErData } from '../hooks/useErData';
+import { useErDiagram } from '../hooks/useErData';
 import { TableMetadata, ColumnMetadata, SchemaChange, SchemaSnapshot, DEFAULT_DATA_TYPES_CONFIG } from '../types/er';
 import { X, GitCommit, Plus, Trash2, Save, Database, Hash, ShieldCheck, AlertCircle } from 'lucide-react';
 
@@ -9,7 +9,7 @@ interface SchemaChangeModalProps {
 }
 
 const SchemaChangeModal: React.FC<SchemaChangeModalProps> = ({ onClose, initialTarget }) => {
-    const { data, setData, saveSnapshot } = useErData();
+    const { data, setData, saveSnapshot } = useErDiagram();
 
     // Find original table or create a template for a new one
     const originalTable = useMemo(() => {

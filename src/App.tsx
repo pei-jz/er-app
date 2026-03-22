@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import Sidebar from "./components/Sidebar";
 import DiagramCanvas from "./components/DiagramCanvas";
-import { useErDiagram, useErSql } from "./hooks/useErData";
+import { useErDiagram, useErSqlActions } from "./hooks/useErData";
 import ImportModal from "./components/ImportModal";
 import DbConnectionModal from "./components/DbConnectionModal";
 import CategoryEditModal from './components/CategoryEditModal';
@@ -19,6 +19,27 @@ import { generateFullDdl, generateDiffDdl, generateTableDdl } from "./utils/ddlG
 import { ReactFlowProvider } from "@xyflow/react";
 import { PanelLeftOpen } from "lucide-react";
 
+const GlobalKeyboardShortcuts = ({ onSave, setCurrentView }: { onSave: () => void, setCurrentView: (v: AppView) => void }) => {
+    const { addSqlTab } = useErSqlActions();
+    useEffect(() => {
+        const handleGlobalKeyDown = (e: KeyboardEvent) => {
+            if ((e.ctrlKey || e.metaKey)) {
+                if (e.key.toLowerCase() === 's') {
+                    e.preventDefault();
+                    onSave();
+                } else if (e.key.toLowerCase() === 'n') {
+                    e.preventDefault();
+                    addSqlTab();
+                    setCurrentView('sql');
+                }
+            }
+        };
+        window.addEventListener('keydown', handleGlobalKeyDown);
+        return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+    }, [onSave, setCurrentView, addSqlTab]);
+    return null;
+};
+
 function App() {
   const [appMode, setAppMode] = useState<AppMode>('welcome');
   const [currentView, setCurrentView] = useState<AppView>('diagram');
@@ -31,7 +52,6 @@ function App() {
     setTablesForCategory, addTablesToCategory, updateTablePosition,
     updateCategoryPosition, addForeignKey, removeForeignKey, updateSettings
   } = useErDiagram();
-  const { addSqlTab } = useErSql();
 
   const [showImportModal, setShowImportModal] = useState(false);
   const [showDbModal, setShowDbModal] = useState(false);
@@ -61,24 +81,6 @@ function App() {
       }
     }).catch(console.error);
   }, []);
-
-    // Global keyboard listeners
-    useEffect(() => {
-        const handleGlobalKeyDown = (e: KeyboardEvent) => {
-            if ((e.ctrlKey || e.metaKey)) {
-                if (e.key.toLowerCase() === 's') {
-                    e.preventDefault();
-                    handleSave();
-                } else if (e.key.toLowerCase() === 'n') {
-                    e.preventDefault();
-                    addSqlTab();
-                    setCurrentView('sql');
-                }
-            }
-        };
-        window.addEventListener('keydown', handleGlobalKeyDown);
-        return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-    }, [data]);
 
   const handleRefreshDb = async (overrideConfig?: DbConfig) => {
     const configToUse = overrideConfig || dbConfig;
@@ -251,6 +253,7 @@ function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-neutral-900 text-neutral-100 font-sans">
+      <GlobalKeyboardShortcuts onSave={handleSave} setCurrentView={setCurrentView} />
       {appMode === 'welcome' && (
         <WelcomeScreen
           onStartDesign={() => setAppMode('design')}
@@ -298,27 +301,29 @@ function App() {
       {appMode !== 'welcome' && (
         <div className="flex-1 relative min-w-0">
           <ReactFlowProvider>
-            <div className={`h-full w-full ${currentView === 'diagram' ? 'block' : 'hidden'}`}>
-              <DiagramCanvas
-                displayMode={displayMode}
-                data={data}
-                selectedCategoryId={selectedCategoryId}
-                onSelectCategory={setSelectedCategoryId}
-                selectedNodeId={selectedNodeId}
-                onSelectNode={setSelectedNodeId}
-                onUpdateTablePosition={updateTablePosition}
-                onUpdateCategoryPosition={updateCategoryPosition}
-                onEditCategory={handleEditCategory}
-                addTablesToCategory={addTablesToCategory}
-                addForeignKey={addForeignKey}
-                removeForeignKey={removeForeignKey}
-                onTableDoubleClick={(tableName) => {
-                  setInitialMetadataTab('columns');
-                  setInitialMetadataSearch(tableName);
-                  setCurrentView('metadata');
-                }}
-              />
-            </div>
+            {appMode !== 'db' && (
+              <div className={`h-full w-full ${currentView === 'diagram' ? 'block' : 'hidden'}`}>
+                <DiagramCanvas
+                  displayMode={displayMode}
+                  data={data}
+                  selectedCategoryId={selectedCategoryId}
+                  onSelectCategory={setSelectedCategoryId}
+                  selectedNodeId={selectedNodeId}
+                  onSelectNode={setSelectedNodeId}
+                  onUpdateTablePosition={updateTablePosition}
+                  onUpdateCategoryPosition={updateCategoryPosition}
+                  onEditCategory={handleEditCategory}
+                  addTablesToCategory={addTablesToCategory}
+                  addForeignKey={addForeignKey}
+                  removeForeignKey={removeForeignKey}
+                  onTableDoubleClick={(tableName) => {
+                    setInitialMetadataTab('columns');
+                    setInitialMetadataSearch(tableName);
+                    setCurrentView('metadata');
+                  }}
+                />
+              </div>
+            )}
 
             <div className={`h-full w-full ${currentView === 'history' ? 'block' : 'hidden'}`}>
               <HistoryView data={data} />
@@ -341,6 +346,7 @@ function App() {
                   setShowSchemaModal(true);
                 }}
                 onSwitchToSql={() => setCurrentView('sql')}
+                appMode={appMode}
               />
             </div>
 

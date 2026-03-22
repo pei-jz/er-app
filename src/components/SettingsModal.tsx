@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
-import { useErData } from '../hooks/useErData';
+import { useErDiagram } from '../hooks/useErData';
 import { DEFAULT_DATA_TYPES_CONFIG, DataTypeConfig } from '../types/er';
-import { X, Settings, CheckCircle2, Circle, Database, Smartphone, Globe, Shield, Trash2, Plus } from 'lucide-react';
+import { X, Settings, CheckCircle2, Circle, Database, Smartphone, Globe, Trash2, Plus } from 'lucide-react';
 
 interface SettingsModalProps {
     onClose: () => void;
 }
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
-    const { data, updateSettings } = useErData();
+    const { data, updateSettings } = useErDiagram();
     const settings = data.settings || {} as any;
     const [activeTab, setActiveTab] = useState<'display' | 'types'>('display');
 
@@ -54,12 +54,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
             ]
         },
         {
-            title: 'Column - Oracle / Postgres / Virtual',
-            icon: <Shield size={14} />,
+            title: 'Performance & Zoom',
+            icon: <Smartphone size={14} />,
             items: [
-                { id: 'showSequence', label: 'Sequence', description: 'Sequence name' },
-                { id: 'showVirtual', label: 'Virtual', description: 'Virtual/Generated column' },
-                { id: 'showVirtualExpr', label: 'Expression', description: 'Virtual column expression' },
+                { id: 'highPerformanceMode', label: 'High Performance Mode', description: 'Force simplified rendering for large diagrams' },
+                { id: 'disableAnimations', label: 'Disable Animations', description: 'Reduce CPU usage by disabling transitions' },
             ]
         }
     ];

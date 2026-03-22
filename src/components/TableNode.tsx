@@ -12,6 +12,8 @@ interface TableNodeData extends TableMetadata {
     selectedEdgeId?: string | null;
     fks?: Array<{ srcCol: string, tgtCol: string, isUnique: boolean }>;
     activeHighlightColumns?: string[];
+    isLowDetail?: boolean;
+    isVeryLowDetail?: boolean;
 }
 
 interface TableNodeProps {
@@ -21,11 +23,18 @@ interface TableNodeProps {
 
 const TableNode: React.FC<TableNodeProps> = ({ data }) => {
     const displayMode = data.displayMode || 'compact';
+    const isLowDetail = data.isLowDetail;
+    const isVeryLowDetail = data.isVeryLowDetail;
 
-    // Compact mode: show PK + FK only. Full mode: show all columns.
-    const visibleColumns = displayMode === 'compact'
-        ? data.columns.filter(c => c.is_primary_key || c.is_foreign_key)
-        : data.columns;
+    // LOD Logic:
+    // 1. Very Low Detail (Zoom < 0.3): Hide all columns, show only table name.
+    // 2. Low Detail (Zoom < 0.6): Show only PK/FK columns.
+    // 3. Normal Detail: Show columns based on displayMode.
+    const visibleColumns = isVeryLowDetail 
+        ? [] 
+        : (isLowDetail || displayMode === 'compact'
+            ? data.columns.filter(c => c.is_primary_key || c.is_foreign_key)
+            : data.columns);
 
     const isHighlighted = data.isHighlighted;
     const isDimmed = data.isDimmed;
@@ -83,6 +92,29 @@ const TableNode: React.FC<TableNodeProps> = ({ data }) => {
     };
 
     const styleByRelation = highlightStyles[relationType] || highlightStyles.none;
+
+    // ULTRA-LIGHTWEIGHT NODE FOR MAXIMUM PERFORMANCE
+    if (isVeryLowDetail && !isHighlighted) {
+        return (
+            <div className={`bg-neutral-800 border-2 rounded-lg shadow-sm min-w-[120px] max-w-[180px] h-10 flex items-center justify-center px-3 ${isDimmed ? 'opacity-20 border-neutral-800' : 'opacity-80 border-neutral-700'}`}>
+                <span className="text-[10px] font-black text-center truncate text-neutral-400 w-full">{data.name}</span>
+                
+                {/* 
+                    Only render the minimum required handles for DiagramCanvas auto-layout (slot 2).
+                    This avoids React Flow layout crashes without blowing up the DOM.
+                */}
+                <Handle type="target" position={Position.Top} id="top-target-slot-2" style={{opacity:0, width:1, height:1}} />
+                <Handle type="target" position={Position.Bottom} id="bottom-target-slot-2" style={{opacity:0, width:1, height:1}} />
+                <Handle type="target" position={Position.Left} id="left-target-slot-2" style={{opacity:0, width:1, height:1}} />
+                <Handle type="target" position={Position.Right} id="right-target-slot-2" style={{opacity:0, width:1, height:1}} />
+                
+                <Handle type="source" position={Position.Top} id="top-source-slot-2" style={{opacity:0, width:1, height:1}} />
+                <Handle type="source" position={Position.Bottom} id="bottom-source-slot-2" style={{opacity:0, width:1, height:1}} />
+                <Handle type="source" position={Position.Left} id="left-source-slot-2" style={{opacity:0, width:1, height:1}} />
+                <Handle type="source" position={Position.Right} id="right-source-slot-2" style={{opacity:0, width:1, height:1}} />
+            </div>
+        );
+    }
 
     return (
         <div className={`bg-neutral-800 border-2 rounded-lg shadow-xl overflow-hidden min-w-[200px] transition-all duration-300 ${isHighlighted ? `${styleByRelation.border} ${styleByRelation.glow} scale-[1.02]` : 'border-neutral-700'
@@ -151,7 +183,7 @@ const TableNode: React.FC<TableNodeProps> = ({ data }) => {
                             </div>
                             <div className="flex flex-col items-end">
                                 <span className="text-neutral-500 text-[9px] uppercase font-bold tracking-tighter">{col.data_type}</span>
-                                {isFK && <span className="text-emerald-500/50 text-[5px] font-black leading-none truncate max-w-[60px]">→ {col.references_table}</span>}
+                                {isFK && !isLowDetail && <span className="text-emerald-500/50 text-[5px] font-black leading-none truncate max-w-[60px]">→ {col.references_table}</span>}
                             </div>
 
                             {/* Right Side Source Handle (Small dot for UX) */}
@@ -251,29 +283,30 @@ const TableNode: React.FC<TableNodeProps> = ({ data }) => {
                             className="transition-all hover:scale-150 shadow-[0_0_10px_rgba(16,185,129,0.8)]"
                         />
 
+                        {/* Perimeter Source Handles for ER Edges */}
                         <Handle
                             type="source"
                             position={Position.Top}
                             id={`top-source-slot-${slot}`}
-                            style={{ left: offset, top: 0, opacity: 0 }}
+                            style={{ left: offset, top: 0, opacity: 0, width: 2, height: 2, zIndex: 0 }}
                         />
                         <Handle
                             type="source"
                             position={Position.Bottom}
                             id={`bottom-source-slot-${slot}`}
-                            style={{ left: offset, bottom: 0, opacity: 0 }}
+                            style={{ left: offset, bottom: 0, opacity: 0, width: 2, height: 2, zIndex: 0 }}
                         />
                         <Handle
                             type="source"
                             position={Position.Left}
                             id={`left-source-slot-${slot}`}
-                            style={{ top: offset, left: 0, opacity: 0 }}
+                            style={{ top: offset, left: 0, opacity: 0, width: 2, height: 2, zIndex: 0 }}
                         />
                         <Handle
                             type="source"
                             position={Position.Right}
                             id={`right-source-slot-${slot}`}
-                            style={{ top: offset, right: 0, opacity: 0 }}
+                            style={{ top: offset, right: 0, opacity: 0, width: 2, height: 2, zIndex: 0 }}
                         />
                     </React.Fragment>
                 );
@@ -293,6 +326,8 @@ export default React.memo(TableNode, (prev, next) => {
         prev.data.pendingConnection === next.data.pendingConnection &&
         prev.data.selectedEdgeId === next.data.selectedEdgeId &&
         prev.data.activeHighlightColumns === next.data.activeHighlightColumns &&
+        prev.data.isLowDetail === next.data.isLowDetail &&
+        prev.data.isVeryLowDetail === next.data.isVeryLowDetail &&
         prev.data.columns === next.data.columns // Shallow check is usually enough if handled by state
     );
 });

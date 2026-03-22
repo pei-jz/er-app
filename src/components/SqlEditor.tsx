@@ -3,7 +3,7 @@ import { Database, Play, ChevronLeft, ChevronRight, AlertCircle, Terminal, Arrow
 import { invoke } from "@tauri-apps/api/core";
 import { format } from "sql-formatter";
 import { ErDiagramData, DbConfig } from '../types/er';
-import { useErSql, SqlEditorTab, QueryResult, SqlLogEntry } from '../hooks/useErData';
+import { useErSql, useErSqlActions, SqlEditorTab, QueryResult, SqlLogEntry } from '../hooks/useErData';
 import ResultsTable from './ResultsTable';
 
 interface SqlEditorProps {
@@ -24,11 +24,13 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
     const {
         sqlTabs: tabs,
         activeSqlTabId: activeTabId,
+    } = useErSql();
+    const {
         setActiveSqlTabId,
         addSqlTab,
         removeSqlTab,
         updateSqlTab
-    } = useErSql();
+    } = useErSqlActions();
 
     const [isLoading, setIsLoading] = useState(false);
     const [catalog, setCatalog] = useState<DbObject[]>([]);
@@ -482,29 +484,39 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                     mentioned.forEach(t1 => {
                         if (t1.name === t2.name) return;
 
+                        const generateTableAlias = (name: string) => {
+                            const parts = name.split(/[_-]/);
+                            if (parts.length > 1) {
+                                return parts.map(p => p[0]).join('').toLowerCase();
+                            }
+                            return name.substring(0, Math.min(3, name.length)).toLowerCase();
+                        };
+
                         const getAlias = (tname: string) => {
-                            if (!useAliasForJoin) return tname;
                             const m = textBeforeCursor.match(new RegExp(`\\b${tname}\\s+(?:as\\s+)?([a-zA-Z0-9_]+)\\b`, 'i'));
                             if (m) {
                                 const potentialAlias = m[1].toLowerCase();
                                 const ignores = ['as', 'join', 'on', 'where', 'select', 'from', 'and', 'or', 'inner', 'left', 'right', 'outer'];
-                                if (!ignores.includes(potentialAlias)) {
-                                    return m[1];
-                                }
+                                if (!ignores.includes(potentialAlias)) return m[1];
                             }
-                            return tname;
+                            return null;
                         };
-                        const alias1 = getAlias(t1.name);
+
+                        const foundAlias1 = getAlias(t1.name);
+                        const alias1 = foundAlias1 || t1.name;
+                        const useAlias2 = !!foundAlias1 || useAliasForJoin;
+                        const alias2 = useAlias2 ? generateTableAlias(t2.name) : t2.name;
+                        const t2Display = (useAlias2 && alias2 !== t2.name) ? `${t2.name} ${alias2}` : t2.name;
 
                         // t1 has FK to t2
                         const fk1 = t1.columns.find(c => c.references_table === t2.name);
                         if (fk1) {
-                            joinItems.push(`${t2.name} on ${alias1}.${fk1.name} = ${t2.name}.${fk1.references_column}`);
+                            joinItems.push(`${t2Display} on ${alias1}.${fk1.name} = ${alias2}.${fk1.references_column}`);
                         }
                         // t2 has FK to t1
                         const fk2 = t2.columns.find(c => c.references_table === t1.name);
                         if (fk2) {
-                            joinItems.push(`${t2.name} on ${t2.name}.${fk2.name} = ${alias1}.${fk2.references_column}`);
+                            joinItems.push(`${t2Display} on ${alias2}.${fk2.name} = ${alias1}.${fk2.references_column}`);
                         }
                     });
                 });

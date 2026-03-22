@@ -1,15 +1,14 @@
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
     ReactFlow, Background, Controls, MiniMap, Node, Edge, useNodesState, useEdgesState,
-    Connection, HandleType, SelectionMode, useReactFlow, Handle, Position
+    Connection, HandleType, SelectionMode, useReactFlow, Handle, Position, useStore
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import TableNode from './TableNode';
 import CategoryNode from './CategoryNode';
 import EREdge from './EREdge';
 import { ErDiagramData, CategoryMetadata, TableDisplayMode } from '../types/er';
-import { ChevronRight, Home, ArrowLeft } from 'lucide-react';
-import dagre from 'dagre';
+import { ChevronRight, Home } from 'lucide-react';
 
 const nodeTypes = {
     table: TableNode,
@@ -48,6 +47,11 @@ interface PendingConnection {
     type: HandleType;
 }
 
+// Highly optimized boolean selectors for React Flow Zustand store
+// Using these instead of useViewport prevents DiagramCanvas from re-rendering on every pan/zoom frame!
+const isLowDetailSelector = (s: any) => s.transform[2] < 0.6;
+const isVeryLowDetailSelector = (s: any) => s.transform[2] < 0.3;
+
 const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
     displayMode, data, selectedCategoryId, onSelectCategory, selectedNodeId, onSelectNode,
     onUpdateTablePosition, onUpdateCategoryPosition, onEditCategory, addForeignKey, removeForeignKey,
@@ -59,8 +63,33 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
     const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
     const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
+    const [isLayouting, setIsLayouting] = useState(false);
     const { screenToFlowPosition, fitView } = useReactFlow();
+
+    // Use strictly memoized boolean selectors to watch zoom thresholds WITHOUT taking a 60-fps re-render hit
+    const isLowDetailZoom = useStore(isLowDetailSelector);
+    const isVeryLowDetailZoom = useStore(isVeryLowDetailSelector);
+
     const layoutCache = useRef<Map<string, { x: number, y: number }>>(new Map());
+    const workerRef = useRef<Worker | null>(null);
+
+    // Level of Detail Toggles
+    const isLowDetail = isLowDetailZoom || data.settings?.highPerformanceMode;
+    const isVeryLowDetail = isVeryLowDetailZoom || data.settings?.highPerformanceMode;
+    const disableAnimations = data.settings?.disableAnimations;
+
+    useEffect(() => {
+        workerRef.current = new Worker(new URL('../workers/layoutWorker.ts', import.meta.url), { type: 'module' });
+        workerRef.current.onmessage = (e) => {
+            const positions = e.data;
+            Object.entries(positions).forEach(([id, pos]: [string, any]) => {
+                onUpdateTablePosition(id, pos.x, pos.y);
+            });
+            setIsLayouting(false);
+            setShowConfirmModal(false);
+        };
+        return () => workerRef.current?.terminate();
+    }, [onUpdateTablePosition]);
 
     // Helper: Determine best handles based on relative positions (MySQL Workbench Style)
     // Now supports slot distribution to prevent crowding
@@ -90,8 +119,8 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
         }
 
         return {
-            sourceHandle: `${sourceSide}-source-slot-${sourceSlot}`,
-            targetHandle: `${targetSide}-target-slot-${targetSlot}`
+            sourceHandle: `${sourceSide}-source-slot-${isVeryLowDetail ? 2 : sourceSlot}`,
+            targetHandle: `${targetSide}-target-slot-${isVeryLowDetail ? 2 : targetSlot}`
         };
     };
 
@@ -286,6 +315,17 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
         return map;
     }, [data.tables, visibleTableNames]);
 
+    const triggerAutoLayout = useCallback(() => {
+        if (workerRef.current) {
+            setIsLayouting(true);
+            workerRef.current.postMessage({
+                nodes: visibleTables,
+                connections: Array.from(connectionsMap.values()),
+                displayMode
+            });
+        }
+    }, [visibleTables, connectionsMap, displayMode]);
+
     // 3. Identify related entities (Parent/Child distinction)
     const { parentTableNames, childTableNames, toParentEdgeIds, fromChildEdgeIds } = useMemo(() => {
         const ptn = new Set<string>();
@@ -336,63 +376,11 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
 
     // 5. Pre-calculate layout positions (Dagre)
     const layoutedTablePositions = useMemo(() => {
-        const g = new dagre.graphlib.Graph();
-        g.setGraph({ rankdir: 'TB', align: 'UL', edgesep: 30, ranksep: 90, nodesep: 150 });
-        g.setDefaultEdgeLabel(() => ({}));
-
-        const connectedTableNames = new Set<string>();
-        connectionsMap.forEach(conn => {
-            connectedTableNames.add(conn.srcTable);
-            connectedTableNames.add(conn.tgtTable);
-        });
-
-        visibleTables.forEach(t => {
-            if (connectedTableNames.has(t.name)) {
-                const width = displayMode === 'compact' ? 250 : 300;
-                const height = displayMode === 'compact' ? (t.columns.filter(c => c.is_primary_key || c.is_foreign_key).length * 25 + 60) : (t.columns.length * 25 + 60);
-                g.setNode(t.name, { width, height });
-            }
-        });
-
-        connectionsMap.forEach(conn => {
-            g.setEdge(conn.tgtTable, conn.srcTable);
-        });
-
-        dagre.layout(g);
-
-        const positions = new Map<string, { x: number, y: number }>();
-        let maxX = 0;
-        let maxY = 0;
-
-        g.nodes().forEach(v => {
-            const nodeWithPos = g.node(v);
-            if (nodeWithPos) {
-                positions.set(v, { x: nodeWithPos.x, y: nodeWithPos.y });
-                maxX = Math.max(maxX, nodeWithPos.x + nodeWithPos.width);
-                maxY = Math.max(maxY, nodeWithPos.y + nodeWithPos.height);
-            }
-        });
-
-        let isoCursorX = maxX > 0 ? maxX + 50 : 0;
-        let isoCursorY = 0;
-        const maxIsoY = maxY > 0 ? Math.max(maxY, 800) : 800;
-
-        visibleTables.forEach(t => {
-            if (!connectedTableNames.has(t.name)) {
-                const width = displayMode === 'compact' ? 250 : 300;
-                const height = displayMode === 'compact' ? (t.columns.filter(c => c.is_primary_key || c.is_foreign_key).length * 25 + 60) : (t.columns.length * 25 + 60);
-                positions.set(t.name, { x: isoCursorX, y: isoCursorY });
-                isoCursorY += height + 20;
-                if (isoCursorY > maxIsoY) {
-                    isoCursorY = 0;
-                    isoCursorX += width + 30;
-                }
-            }
-        });
-
-        layoutCache.current = positions;
-        return positions;
-    }, [visibleTables, connectionsMap, displayMode]);
+        // We now use the worker for actual layout updates.
+        // This memo is kept for initial placement of unpositioned nodes if needed,
+        // but we'll simplify it or rely on the worker.
+        return layoutCache.current;
+    }, []);
 
     // 6. Sync nodes and edges on state change
     useEffect(() => {
@@ -450,12 +438,14 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
                     isDimmed,
                     relationType,
                     selectedEdgeId,
+                    isLowDetail,
+                    isVeryLowDetail,
                     activeHighlightColumns: Array.from(highlightedColumns.get(t.name) || []),
                     fks: connectionsMap.get(`${t.name}->`)?.fks || Array.from(connectionsMap.values()).find(c => c.tgtTable === t.name || c.srcTable === t.name)?.fks || [],
                 } as any,
                 style: {
                     opacity: isDimmed ? 0.3 : 1,
-                    transition: 'all 0.2s ease-in-out',
+                    transition: (isVeryLowDetail || disableAnimations) ? 'none' : 'all 0.2s ease-in-out',
                     zIndex: isSelected || selectedEdgeId ? 1000 : (isRelated ? 500 : 0)
                 }
             };
@@ -529,15 +519,15 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
                 targetHandle,
                 type: 'er-edge',
                 data: {
-                    offset: (sourceSlot - 2) * 10,
+                    sourceTable: srcTable,
+                    fks: fks,
+                    isLowDetail,
+                    isVeryLowDetail,
                     isHighlighted: isRelated,
                     isDimmed,
                     relationType,
                     label: isRelated ? labelText : '',
                     isOneToOne,
-                    targetTable: tgtTable,
-                    sourceTable: srcTable,
-                    fks: fks
                 },
                 zIndex: isRelated ? 1000 : 0
             };
@@ -555,14 +545,80 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
                 }))
         );
 
-        setNodes([...cNodes, ...tNodes]);
-        setEdges([...rEdges, ...catEdges]);
+        const isNodeEqual = (a: Node, b: Node) => {
+            if (a.id !== b.id || a.position.x !== b.position.x || a.position.y !== b.position.y) return false;
+            if (a.style?.opacity !== b.style?.opacity || a.style?.zIndex !== b.style?.zIndex) return false;
+            
+            const ad = a.data as any, bd = b.data as any;
+            if (!ad || !bd) return false;
+            if (
+                ad.isHighlighted !== bd.isHighlighted ||
+                ad.isDimmed !== bd.isDimmed ||
+                ad.relationType !== bd.relationType ||
+                ad.selectedEdgeId !== bd.selectedEdgeId ||
+                ad.displayMode !== bd.displayMode ||
+                ad.isLowDetail !== bd.isLowDetail ||
+                ad.isVeryLowDetail !== bd.isVeryLowDetail ||
+                ad.pendingConnection !== bd.pendingConnection ||
+                ad.columns !== bd.columns ||
+                ad.activeHighlightColumns?.length !== bd.activeHighlightColumns?.length
+            ) return false;
+            
+            return true;
+        };
+
+        const isEdgeEqual = (a: Edge, b: Edge) => {
+            if (a.id !== b.id || a.sourceHandle !== b.sourceHandle || a.targetHandle !== b.targetHandle) return false;
+            if (a.zIndex !== b.zIndex) return false;
+            
+            const ad = a.data as any, bd = b.data as any;
+            if (!ad || !bd) return false;
+            if (
+                ad.isHighlighted !== bd.isHighlighted ||
+                ad.isDimmed !== bd.isDimmed ||
+                ad.relationType !== bd.relationType ||
+                ad.label !== bd.label ||
+                ad.isLowDetail !== bd.isLowDetail ||
+                ad.isVeryLowDetail !== bd.isVeryLowDetail
+            ) return false;
+            return true;
+        };
+
+        setNodes(prev => {
+            const prevMap = new Map(prev.map(n => [n.id, n]));
+            let changed = false;
+            const nextNodes = [...cNodes, ...tNodes].map(newNode => {
+                const p = prevMap.get(newNode.id);
+                if (p && isNodeEqual(p, newNode)) {
+                    return p;
+                }
+                changed = true;
+                return newNode;
+            });
+            if (!changed && prev.length === nextNodes.length) return prev;
+            return nextNodes;
+        });
+
+        setEdges(prev => {
+            const prevMap = new Map(prev.map(e => [e.id, e]));
+            let changed = false;
+            const nextEdges = [...rEdges, ...catEdges].map(newEdge => {
+                const p = prevMap.get(newEdge.id);
+                if (p && isEdgeEqual(p, newEdge)) {
+                    return p;
+                }
+                changed = true;
+                return newEdge;
+            });
+            if (!changed && prev.length === nextEdges.length) return prev;
+            return nextEdges;
+        });
     }, [
         visibleTables, visibleCategories, connectionsMap,
         parentTableNames, childTableNames, toParentEdgeIds, fromChildEdgeIds,
         highlightedColumns, layoutedTablePositions,
         selectedNodeId, selectedEdgeId, displayMode, pendingConnection,
-        onSelectCategory, onEditCategory
+        onSelectCategory, onEditCategory, isLowDetail, isVeryLowDetail, disableAnimations
     ]);
 
     // Transient Rendering (Mouse Node & Ghost Edge)
@@ -582,9 +638,20 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
     }, [nodes, pendingConnection, mousePos]);
 
     const finalEdges = useMemo(() => {
-        if (!pendingConnection) return edges;
+        // Render optimization: CULL EDGES when zoomed out to save massive SVG drawing overhead!
+        // We only show edges that are directly related to the selected item.
+        let currentEdges = [...edges];
+        if (isVeryLowDetail) {
+            currentEdges = currentEdges.filter(e => {
+                if (e.id === 'ghost-edge') return true; // Always show ghost edge if it exists
+                return e.data?.isHighlighted || e.id === selectedEdgeId || (selectedNodeId && (e.source === selectedNodeId || e.target === selectedNodeId));
+            });
+        }
+
+        if (!pendingConnection) return currentEdges;
+
         return [
-            ...edges,
+            ...currentEdges,
             {
                 id: 'draft-edge',
                 source: pendingConnection.nodeId,
@@ -645,19 +712,15 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
         });
     };
 
-    const handleGoBack = () => {
-        if (breadcrumbs.length > 0) {
-            const parent = breadcrumbs[breadcrumbs.length - 2];
-            onSelectCategory(parent ? parent.id : null);
-        }
-    };
+
 
     return (
-        <div className="w-full h-full bg-neutral-900 overflow-hidden relative">
+        <div className="w-full h-full bg-neutral-900 overflow-hidden relative group">
             <div className="absolute top-6 left-6 z-10 flex items-center gap-2 bg-neutral-800/80 backdrop-blur-xl border border-neutral-700/50 p-1.5 rounded-2xl shadow-2xl">
                 <button
                     onClick={() => onSelectCategory(null)}
                     className={`p-2 rounded-xl transition-all ${!selectedCategoryId ? 'bg-blue-600 text-white shadow-lg' : 'text-neutral-400 hover:bg-neutral-700 hover:text-white'}`}
+                    title="Home"
                 >
                     <Home size={18} />
                 </button>
@@ -672,15 +735,6 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
                         </button>
                     </React.Fragment>
                 ))}
-                {selectedCategoryId && (
-                    <button
-                        onClick={handleGoBack}
-                        className="ml-2 flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase bg-neutral-900/50 hover:bg-neutral-900 text-neutral-400 hover:text-white rounded-xl transition-all border border-neutral-700/30"
-                    >
-                        <ArrowLeft size={12} />
-                        Back
-                    </button>
-                )}
             </div>
 
             <ReactFlow
@@ -710,6 +764,7 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
                 onPaneMouseMove={onPaneMouseMove}
                 onConnectStart={onConnectStart}
                 onConnectEnd={onConnectEnd}
+                onlyRenderVisibleElements={true}
             >
                 <Background gap={24} color="#262626" />
                 <Controls />
@@ -718,6 +773,20 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
                     className="m-4 rounded-xl overflow-hidden grayscale opacity-30 pointer-events-none"
                     maskColor="rgba(0,0,0,0.6)"
                 />
+                <svg style={{ position: 'absolute', top: 0, left: 0, width: 0, height: 0 }}>
+                    <defs>
+                        {/* 1 side marker (TARGET -> end) */}
+                        <marker id="marker-1-global" markerUnits="userSpaceOnUse" markerWidth="16" markerHeight="16" refX="8" refY="8" orient="auto">
+                            <line x1="8" y1="2" x2="8" y2="14" stroke="#525252" strokeWidth="2" />
+                            <line x1="12" y1="2" x2="12" y2="14" stroke="#525252" strokeWidth="2" />
+                        </marker>
+                        {/* 1:1 side marker (SOURCE -> start) */}
+                        <marker id="marker-1to1-global" markerUnits="userSpaceOnUse" markerWidth="20" markerHeight="20" refX="10" refY="10" orient="auto">
+                            <line x1="6" y1="4" x2="6" y2="16" stroke="#525252" strokeWidth="2" />
+                            <line x1="10" y1="4" x2="10" y2="16" stroke="#525252" strokeWidth="2" />
+                        </marker>
+                    </defs>
+                </svg>
             </ReactFlow>
 
             <div className="absolute top-6 right-6 z-10 flex items-center gap-3">
@@ -759,12 +828,7 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
                                 Cancel
                             </button>
                             <button
-                                onClick={() => {
-                                    layoutCache.current.forEach((pos, id) => {
-                                        onUpdateTablePosition(id, pos.x, pos.y);
-                                    });
-                                    setShowConfirmModal(false);
-                                }}
+                                onClick={triggerAutoLayout}
                                 className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-xl text-xs font-black shadow-lg shadow-blue-900/20 transition-all active:scale-95"
                             >
                                 Confirm
@@ -773,8 +837,36 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
                     </div>
                 </div>
             )}
+
+            {/* Layouting Progress Overlay */}
+            {isLayouting && (
+                <div className="fixed inset-0 z-[3000] flex items-center justify-center bg-black/60 backdrop-blur-md transition-all duration-300">
+                    <div className="flex flex-col items-center gap-6 max-w-sm w-full p-8 bg-neutral-900/90 border border-neutral-700/50 rounded-3xl shadow-2xl animate-in zoom-in-95 duration-300">
+                        <div className="relative">
+                            <div className="w-20 h-20 rounded-full border-4 border-neutral-800 border-t-blue-500 animate-spin"></div>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                                <span className="text-xs font-black text-blue-400">ER</span>
+                            </div>
+                        </div>
+                        <div className="text-center space-y-2">
+                            <h3 className="text-lg font-black text-white uppercase tracking-widest">Optimizing Layout</h3>
+                            <p className="text-xs text-neutral-500 font-medium">Calculating optimal table positions...</p>
+                        </div>
+                        <div className="w-full h-1 bg-neutral-800 rounded-full overflow-hidden border border-neutral-800">
+                            <div className="h-full bg-blue-500 rounded-full animate-progress-indeterminate"></div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
 
-export default DiagramCanvas;
+// Deeply memoize the canvas to prevent 6-second freezes when switching tabs out of Diagram view.
+export default React.memo(DiagramCanvas, (prev, next) => {
+    // Only re-render if the core data structure or relevant selections actually changed.
+    return prev.data === next.data &&
+           prev.displayMode === next.displayMode &&
+           prev.selectedCategoryId === next.selectedCategoryId &&
+           prev.selectedNodeId === next.selectedNodeId;
+});

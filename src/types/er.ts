@@ -121,6 +121,10 @@ export interface MetadataSettings {
     availableDataTypes?: string[];
     availableDataTypesConfigs?: DataTypeConfig[];
     activeDatabase?: 'all' | 'mysql' | 'postgres' | 'oracle';
+
+    // Performance
+    highPerformanceMode?: boolean;
+    disableAnimations?: boolean;
 }
 
 export interface DataTypeConfig {

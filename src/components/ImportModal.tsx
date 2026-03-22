@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { CsvConfig, TableMetadata } from '../types/er';
-import { useErData } from '../hooks/useErData';
+import { useErDiagram } from '../hooks/useErData';
 import { X, FileSpreadsheet, AlertCircle } from 'lucide-react';
 
 const FIELD_TYPES: Record<string, 'string' | 'number' | 'bool'> = {
@@ -52,7 +52,7 @@ interface ImportModalProps {
 }
 
 const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) => {
-    const { data } = useErData();
+    const { data } = useErDiagram();
     const settings = data.settings || {} as any;
 
     const [filePath, setFilePath] = useState<string | null>(null);
@@ -154,38 +154,50 @@ const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) => {
         }
     };
 
-    const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+    const [draggingIndex, setDraggingIndex] = React.useState<number | null>(null);
+    const [overIndex, setOverIndex] = React.useState<number | null>(null);
+    const [mousePos, setMousePos] = React.useState({ x: 0, y: 0 });
 
-    const handleDragStart = (e: React.DragEvent, index: number) => {
-        setDraggedIndex(index);
-        e.dataTransfer.setData('text/plain', index.toString());
-        e.dataTransfer.effectAllowed = 'move';
-        // Optional: Make the drag image transparent or custom if desired
+    // Global listeners for custom dragging
+    React.useEffect(() => {
+        if (draggingIndex === null) return;
+
+        const handleMouseMove = (e: MouseEvent) => {
+            setMousePos({ x: e.clientX, y: e.clientY });
+        };
+
+        const handleMouseUp = () => {
+            if (overIndex !== null && overIndex !== draggingIndex) {
+                setMappedFields(prev => {
+                    const newFields = [...prev];
+                    const [draggedItem] = newFields.splice(draggingIndex, 1);
+                    newFields.splice(overIndex, 0, draggedItem);
+                    return newFields;
+                });
+            }
+            setDraggingIndex(null);
+            setOverIndex(null);
+        };
+
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        return () => {
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [draggingIndex, overIndex]);
+
+    const handleItemMouseDown = (index: number, e: React.MouseEvent) => {
+        // Only trigger on left click
+        if (e.button !== 0) return;
+        setDraggingIndex(index);
+        setMousePos({ x: e.clientX, y: e.clientY });
     };
 
-    const handleDragOver = (e: React.DragEvent, index: number) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-
-        if (draggedIndex === null || draggedIndex === index) return;
-
-        // Reorder dynamically while dragging
-        setMappedFields(prev => {
-            const newFields = [...prev];
-            const [draggedItem] = newFields.splice(draggedIndex, 1);
-            newFields.splice(index, 0, draggedItem);
-            return newFields;
-        });
-        setDraggedIndex(index);
-    };
-
-    const handleDrop = (e: React.DragEvent) => {
-        e.preventDefault();
-        setDraggedIndex(null);
-    };
-
-    const handleDragEnd = () => {
-        setDraggedIndex(null);
+    const handleItemMouseEnter = (index: number) => {
+        if (draggingIndex !== null) {
+            setOverIndex(index);
+        }
     };
 
     const addIgnoreCol = () => {
@@ -201,7 +213,10 @@ const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) => {
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 text-neutral-100">
+        <div 
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 text-neutral-100"
+            onDragOver={(e) => e.preventDefault()}
+        >
             <div className="bg-neutral-800 border border-neutral-700 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col">
                 <div className="px-6 py-4 border-b border-neutral-700 flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -237,16 +252,13 @@ const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) => {
 
                         <p className="text-xs text-neutral-500">The order of these items from top to bottom corresponds to CSV Columns 1, 2, 3...</p>
 
-                        <div className="space-y-2 bg-neutral-900/50 p-2 rounded-xl border border-neutral-800">
+                        <div className="space-y-2 bg-neutral-900/50 p-2 rounded-xl border border-neutral-800 relative">
                             {mappedFields.map((field, index) => (
                                 <div
-                                    key={`${field.id}-${index}`}
-                                    draggable={true}
-                                    onDragStart={(e) => handleDragStart(e, index)}
-                                    onDragOver={(e) => handleDragOver(e, index)}
-                                    onDrop={handleDrop}
-                                    onDragEnd={handleDragEnd}
-                                    className={`flex items-center justify-between bg-neutral-800 border p-3 rounded-lg cursor-grab active:cursor-grabbing transition-all select-none group shadow-sm ${draggedIndex === index ? 'opacity-50 border-blue-500 scale-[0.98]' : 'border-neutral-700 hover:border-blue-500/50'}`}
+                                    key={field.id}
+                                    onMouseDown={(e) => handleItemMouseDown(index, e)}
+                                    onMouseEnter={() => handleItemMouseEnter(index)}
+                                    className={`flex items-center justify-between bg-neutral-800 border p-3 rounded-lg cursor-grab active:cursor-grabbing transition-all select-none group shadow-sm ${draggingIndex === index ? 'opacity-20 grayscale border-dashed' : overIndex === index ? 'border-blue-500 bg-blue-500/5 scale-[1.01]' : 'border-neutral-700 hover:border-neutral-500/50'}`}
                                 >
                                     <div className="flex items-center gap-3 pointer-events-none">
                                         <div className="text-[10px] font-black text-neutral-600 bg-neutral-900 px-2 py-1 rounded-md w-12 text-center border border-neutral-800 uppercase">
@@ -269,6 +281,32 @@ const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) => {
                                 </div>
                             ))}
                         </div>
+
+                        {/* Custom Drag Ghost */}
+                        {draggingIndex !== null && (
+                            <div 
+                                style={{ 
+                                    position: 'fixed', 
+                                    left: mousePos.x, 
+                                    top: mousePos.y, 
+                                    pointerEvents: 'none',
+                                    zIndex: 9999,
+                                    width: '320px',
+                                    transform: 'translate(-50%, -50%)',
+                                    opacity: 0.9
+                                }}
+                                className="flex items-center justify-between bg-neutral-700 border border-blue-500 p-3 rounded-lg shadow-2xl pointer-events-none scale-105"
+                            >
+                                <div className="flex items-center gap-3">
+                                    <div className="text-[10px] font-black text-blue-300 bg-blue-900 px-2 py-1 rounded-md uppercase border border-blue-700/50">
+                                        Moving
+                                    </div>
+                                    <span className="text-sm font-bold text-white">
+                                        {mappedFields[draggingIndex].label}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
 
                         {initialFields.filter((f: any) => !mappedFields.find(m => m.id === f.id)).length > 0 && (
                             <div className="mt-4 p-3 border border-neutral-700/50 rounded-xl bg-neutral-800/30">
@@ -307,23 +345,48 @@ const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) => {
                         )}
                     </div>
 
-                    <div className="px-6 py-4 bg-neutral-900/50 border-t border-neutral-700 flex justify-end gap-3">
-                        <button
-                            onClick={onClose}
-                            className="px-4 py-2 rounded-lg text-sm font-semibold hover:bg-neutral-800 transition-colors text-neutral-300"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            disabled={!filePath || loading}
-                            onClick={handleImport}
-                            className="bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-blue-500 px-6 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 text-white"
-                        >
-                            {loading ? "Importing..." : "Start Import"}
-                        </button>
+                    <div className="px-6 py-4 bg-neutral-900/50 border-t border-neutral-700">
+                        {loading && (
+                            <div className="mb-4 space-y-2">
+                                <div className="flex justify-between text-[10px] font-bold text-blue-400 uppercase tracking-widest">
+                                    <span>Processing CSV Data</span>
+                                    <span className="animate-pulse">Please wait...</span>
+                                </div>
+                                <div className="h-1.5 w-full bg-neutral-800 rounded-full overflow-hidden border border-neutral-700">
+                                    <div className="h-full bg-blue-500 rounded-full animate-progress-indeterminate shadow-[0_0_10px_rgba(59,130,246,0.5)]"></div>
+                                </div>
+                            </div>
+                        )}
+                        <div className="flex justify-end gap-3">
+                            <button
+                                onClick={onClose}
+                                className="px-4 py-2 rounded-lg text-sm font-semibold hover:bg-neutral-800 transition-colors text-neutral-300"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                disabled={!filePath || loading}
+                                onClick={handleImport}
+                                className="bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-blue-500 px-6 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 text-white"
+                            >
+                                {loading ? "Importing..." : "Start Import"}
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
+            <style>{`
+                @keyframes progress-indeterminate {
+                    0% { transform: translateX(-100%) scaleX(0.2); }
+                    50% { transform: translateX(0%) scaleX(0.5); }
+                    100% { transform: translateX(100%) scaleX(0.2); }
+                }
+                .animate-progress-indeterminate {
+                    animation: progress-indeterminate 1.5s infinite linear;
+                    transform-origin: left;
+                    width: 100%;
+                }
+            `}</style>
         </div>
     );
 };

@@ -31,6 +31,9 @@ export interface SqlEditorTab {
 interface ErSqlContextType {
     sqlTabs: SqlEditorTab[];
     activeSqlTabId: string;
+}
+
+interface ErSqlActionsContextType {
     setActiveSqlTabId: (id: string) => void;
     addSqlTab: (name?: string, initialSql?: string) => string;
     removeSqlTab: (id: string) => void;
@@ -63,6 +66,7 @@ interface ErDiagramContextType {
 }
 
 export const ErSqlContext = createContext<ErSqlContextType | undefined>(undefined);
+export const ErSqlActionsContext = createContext<ErSqlActionsContextType | undefined>(undefined);
 export const ErDiagramContext = createContext<ErDiagramContextType | undefined>(undefined);
 
 const defaultSettings: MetadataSettings = {
@@ -497,12 +501,15 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
 
     const sqlValue = useMemo(() => ({
         sqlTabs,
-        activeSqlTabId,
+        activeSqlTabId
+    }), [sqlTabs, activeSqlTabId]);
+
+    const sqlActionsValue = useMemo(() => ({
         setActiveSqlTabId,
         addSqlTab,
         removeSqlTab,
         updateSqlTab
-    }), [sqlTabs, activeSqlTabId, addSqlTab, removeSqlTab, updateSqlTab]);
+    }), [setActiveSqlTabId, addSqlTab, removeSqlTab, updateSqlTab]);
 
     const diagramValue = useMemo(() => ({
         data,
@@ -537,9 +544,11 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
 
     return (
         <ErSqlContext.Provider value={sqlValue}>
-            <ErDiagramContext.Provider value={diagramValue}>
-                {children}
-            </ErDiagramContext.Provider>
+            <ErSqlActionsContext.Provider value={sqlActionsValue}>
+                <ErDiagramContext.Provider value={diagramValue}>
+                    {children}
+                </ErDiagramContext.Provider>
+            </ErSqlActionsContext.Provider>
         </ErSqlContext.Provider>
     );
 }
@@ -560,8 +569,17 @@ export function useErSql() {
     return context;
 }
 
+export function useErSqlActions() {
+    const context = useContext(ErSqlActionsContext);
+    if (!context) {
+        throw new Error('useErSqlActions must be used within a ErDataProvider');
+    }
+    return context;
+}
+
 export function useErData() {
     const diag = useErDiagram();
     const sql = useErSql();
-    return { ...diag, ...sql };
+    const sqlActions = useErSqlActions();
+    return { ...diag, ...sql, ...sqlActions };
 }
