@@ -12,6 +12,8 @@ import MetadataEditor from "./components/MetadataEditor";
 import ExportOptionsModal from "./components/ExportOptionsModal";
 import WelcomeScreen from "./components/WelcomeScreen";
 import SqlEditor from "./components/SqlEditor";
+import ForeignKeyModal from "./components/ForeignKeyModal";
+import { DbObject } from "./components/Sidebar";
 import { AppMode, AppView, CategoryMetadata, TableDisplayMode, DEFAULT_DATA_TYPES_CONFIG, ErDiagramData, DbConfig, TableMetadata } from "./types/er";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -67,6 +69,9 @@ function App() {
   const [dbConfig, setDbConfig] = useState<DbConfig | undefined>(undefined);
   const [dbConnectionStatus, setDbConnectionStatus] = useState<'connected' | 'error' | 'disconnected'>('disconnected');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [catalog, setCatalog] = useState<DbObject[]>([]);
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
+  const [showFkModal, setShowFkModal] = useState(false);
 
   useEffect(() => {
     invoke<string[]>('get_cmd_args').then(args => {
@@ -82,18 +87,41 @@ function App() {
     }).catch(console.error);
   }, []);
 
-  const handleRefreshDb = async (overrideConfig?: DbConfig) => {
+  const handleRefreshDb = async (overrideConfig?: DbConfig, forceLiveDbMode?: boolean) => {
     const configToUse = overrideConfig || dbConfig;
     if (!configToUse) return;
     try {
-      const tables = await invoke<TableMetadata[]>('fetch_db_metadata', { config: configToUse });
-      clearTables(); // Reset existing metadata before adding new one
-      addTables(tables);
+      const isLiveDb = forceLiveDbMode !== undefined ? forceLiveDbMode : (appMode === 'db');
+      if (!isLiveDb) {
+        const tables = await invoke<TableMetadata[]>('fetch_db_metadata', { config: configToUse });
+        clearTables(); // Reset existing metadata before adding new one
+        addTables(tables);
+      } else {
+        // In LiveDB mode, just fetch the catalog (table names etc)
+        setIsLoadingCatalog(true);
+        try {
+          const startTime = Date.now();
+          const cat = await invoke<DbObject[]>('fetch_db_catalog', { config: configToUse });
+          const duration = Date.now() - startTime;
+          window.dispatchEvent(new CustomEvent('add-sql-log', {
+            detail: {
+              sql: `(app) [Fetch Catalog]\n-- Backend executes DB-specific fetching queries:\n-- MySQL: SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE()\n-- Postgres: SELECT tablename, 'TABLE' FROM pg_tables WHERE schemaname = current_schema()\n-- Oracle: SELECT OBJECT_NAME, OBJECT_TYPE FROM USER_OBJECTS`,
+              duration_ms: duration,
+              rows: cat.length,
+              status: 'success'
+            }
+          }));
+          setCatalog(cat);
+        } finally {
+          setIsLoadingCatalog(false);
+        }
+      }
       setDbConnectionStatus('connected');
     } catch (e) {
       console.error("Failed to refresh schema", e);
       setDbConnectionStatus('error');
-      alert('Failed to refresh schema: ' + String(e));
+      // Re-throw if we want the caller (modal) to handle it
+      throw e;
     }
   };
 
@@ -276,7 +304,7 @@ function App() {
 
       {appMode !== 'welcome' && isSidebarOpen && (
         <Sidebar
-          currentView={currentView}
+          currentView={appMode === 'db' ? 'sql' : currentView}
           setCurrentView={setCurrentView}
           displayMode={displayMode}
           setDisplayMode={setDisplayMode}
@@ -290,11 +318,14 @@ function App() {
           onExportSql={handleExportSql}
           onExportJson={handleExportJson}
           onOpenSettings={() => setShowSettingsModal(true)}
+          onOpenFkModal={() => setShowFkModal(true)}
           onToggle={() => setIsSidebarOpen(false)}
           appMode={appMode}
           dbConfig={dbConfig}
           dbConnectionStatus={dbConnectionStatus}
           onRefreshDb={() => handleRefreshDb()}
+          catalog={catalog}
+          isLoadingCatalog={isLoadingCatalog}
         />
       )}
 
@@ -358,6 +389,7 @@ function App() {
                 onConnectionStatusChange={setDbConnectionStatus}
                 onOpenDbConnect={() => { setDbModalMode('connect'); setShowDbModal(true); }}
                 isSidebarOpen={isSidebarOpen}
+                catalog={catalog}
               />
             </div>
           </ReactFlowProvider>
@@ -426,18 +458,20 @@ function App() {
         <DbConnectionModal
           mode={dbModalMode}
           onClose={() => setShowDbModal(false)}
-          onImport={(tables, config) => {
+          onImport={async (tables, config) => {
             clearTables(); // Reset existing metadata
             addTables(tables);
             setDbConfig(config);
             setSelectedCategoryId('all');
             setCurrentView('sql');
           }}
-          onConnect={(config) => {
+          onConnect={async (config) => {
+            // Wait for success before changing mode/closing modal
+            await handleRefreshDb(config, true);
+            
             setDbConfig(config);
             setAppMode('db');
             setCurrentView('sql');
-            handleRefreshDb(config);
           }}
         />
       )}
@@ -449,6 +483,16 @@ function App() {
           allTables={data.tables}
           onClose={() => setShowCategoryModal(false)}
           onSave={handleSaveCategory}
+        />
+      )}
+
+      {showFkModal && (
+        <ForeignKeyModal
+          isOpen={showFkModal}
+          onClose={() => setShowFkModal(false)}
+          tables={data.tables}
+          onAddForeignKey={addForeignKey}
+          initialSourceTable={selectedNodeId || undefined}
         />
       )}
     </div>

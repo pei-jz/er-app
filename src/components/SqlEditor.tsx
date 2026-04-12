@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { format } from "sql-formatter";
 import { ErDiagramData, DbConfig } from '../types/er';
 import { useErSql, useErSqlActions, SqlEditorTab, QueryResult, SqlLogEntry } from '../hooks/useErData';
+import { DbObject } from './Sidebar';
 import ResultsTable from './ResultsTable';
 
 interface SqlEditorProps {
@@ -13,27 +14,37 @@ interface SqlEditorProps {
     isSidebarOpen: boolean;
     dbConnectionStatus: 'connected' | 'error' | 'disconnected';
     onConnectionStatusChange: (status: 'connected' | 'error' | 'disconnected') => void;
+    catalog?: DbObject[];
 }
 
-interface DbObject {
-    name: string;
-    object_type: string;
-}
-
-export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOpen, dbConnectionStatus, onConnectionStatusChange }: SqlEditorProps) {
+export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOpen, dbConnectionStatus, onConnectionStatusChange, catalog = [] }: SqlEditorProps) {
     const {
         sqlTabs: tabs,
         activeSqlTabId: activeTabId,
+        isGlobalExecuting,
     } = useErSql();
     const {
         setActiveSqlTabId,
         addSqlTab,
         removeSqlTab,
-        updateSqlTab
+        updateSqlTab,
+        setIsGlobalExecuting,
     } = useErSqlActions();
 
+    // Reset uncommitted changes flag when dbConfig changes (new session)
+    useEffect(() => {
+        tabs.forEach(tab => {
+            if (tab.results?.has_uncommitted_changes) {
+                updateSqlTab(tab.id, { 
+                    results: { ...tab.results, has_uncommitted_changes: false } 
+                });
+            }
+        });
+    }, [dbConfig?.host, dbConfig?.db_name, dbConfig?.user, updateSqlTab]);
+
     const [isLoading, setIsLoading] = useState(false);
-    const [catalog, setCatalog] = useState<DbObject[]>([]);
+    const isLocalExecuting = isLoading; // For backward compatibility or internal use
+    const [cachedColumns] = useState<Record<string, string[]>>({});
 
     // Auto-complete state
     const [suggestions, setSuggestions] = useState<{ type: 'table' | 'column' | 'join', items: string[], replacePrefix: string } | null>(null);
@@ -41,6 +52,14 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
     const [cursorIdx, setCursorIdx] = useState(0);
     const [editorHeightPercent, setEditorHeightPercent] = useState(50);
     const [pendingCursor, setPendingCursor] = useState<number | null>(null);
+
+    // Auto-scroll logic for suggestions
+    useEffect(() => {
+        if (suggestions && selectedIndex >= 0) {
+            scrollToSuggestion(selectedIndex);
+        }
+    }, [selectedIndex, suggestions]);
+
     const [useAliasForJoin, setUseAliasForJoin] = useState(true);
     const [suggestionPos, setSuggestionPos] = useState({ top: 40, left: 40 });
 
@@ -72,6 +91,67 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
             textareaRef.current.focus();
         }
     }, [activeTabId]);
+
+    useEffect(() => {
+        const handleInsertText = (e: Event) => {
+            const customEvent = e as CustomEvent<{ text: string, type: 'newline' | 'inline' | 'inline-comma' }>;
+            const { text, type } = customEvent.detail;
+            if (!textareaRef.current) return;
+            const textarea = textareaRef.current;
+            textarea.focus();
+
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const currentSql = textarea.value || '';
+            
+            let textToInsert = text;
+            if (type === 'newline') {
+                const needsPrefix = start > 0 && currentSql[start - 1] !== '\n';
+                const needsSuffix = end < currentSql.length && currentSql[end] !== '\n';
+                textToInsert = `${needsPrefix ? '\n' : ''}${text}${needsSuffix ? '\n' : ''}`;
+            } else if (type === 'inline-comma') {
+                const textBeforeStart = currentSql.slice(0, start).trimEnd();
+                const upperBefore = textBeforeStart.toUpperCase();
+                const needsComma = textBeforeStart.length > 0 
+                    && !textBeforeStart.endsWith(',') 
+                    && !textBeforeStart.endsWith('(')
+                    && !upperBefore.endsWith('SELECT')
+                    && !upperBefore.endsWith('FROM')
+                    && !upperBefore.endsWith('WHERE')
+                    && !upperBefore.endsWith('SET');
+                textToInsert = `${needsComma ? ', ' : ''}${text}`;
+            }
+
+            // Use document.execCommand to support Undo (Ctrl+Z)
+            // Note: textarea must be focused.
+            document.execCommand('insertText', false, textToInsert);
+        };
+
+        window.addEventListener('insert-sql-text', handleInsertText);
+        return () => window.removeEventListener('insert-sql-text', handleInsertText);
+    }, [activeTab.sql, activeTabId, updateSqlTab]);
+
+    useEffect(() => {
+        const handleAddSqlLog = (e: Event) => {
+            const customEvent = e as CustomEvent<{ sql: string, duration_ms: number, rows: number, status?: 'success' | 'error' }>;
+            const { sql, duration_ms, rows, status } = customEvent.detail;
+            
+            const newLog: SqlLogEntry = {
+                time: new Date().toLocaleTimeString(),
+                sql: sql,
+                durationMs: duration_ms,
+                rowsAffected: rows,
+                error: status === 'error' ? 'Failed' : undefined
+            };
+            
+            updateSqlTab(activeTabId, {
+                logs: [newLog, ...(activeTab.logs || [])]
+            });
+        };
+
+        window.addEventListener('add-sql-log', handleAddSqlLog);
+        return () => window.removeEventListener('add-sql-log', handleAddSqlLog);
+    }, [activeTabId, activeTab.logs, updateSqlTab]);
 
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -131,6 +211,9 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
 
     const startResize = (e: React.MouseEvent) => {
         e.preventDefault();
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'row-resize';
+
         const startY = e.clientY;
         const startPercent = editorHeightPercent;
 
@@ -144,6 +227,8 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
         };
 
         const stopDrag = () => {
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
             document.removeEventListener('mousemove', doDrag);
             document.removeEventListener('mouseup', stopDrag);
         };
@@ -395,6 +480,7 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
     };
 
     const handleExecute = async (newOffset: number = 0, specificSql?: string) => {
+        if (isGlobalExecuting) return; // Block multiple executions
         if (!dbConfig) {
             updateActiveTab({ error: "Database connection not configured. Please connect first via Sidebar." });
             return;
@@ -402,6 +488,7 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
         const executeQuery = specificSql || sql;
         if (!executeQuery.trim()) return;
 
+        setIsGlobalExecuting(true);
         setIsLoading(true);
         updateActiveTab({ error: null });
         const startTime = Date.now();
@@ -426,13 +513,11 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                 logs: [newLog, ...(activeTab.logs || [])],
                 activeBottomTab: 'results'
             });
-            // Initialize column widths if needed
             const newWidths: Record<string, number> = {};
-            res.columns.forEach(c => newWidths[c] = 150); // default 150px
+            res.columns.forEach(c => newWidths[c] = 150);
             setColWidths(newWidths);
         } catch (e) {
             const durationMs = Date.now() - startTime;
-            // Check for connection-related errors
             const errorStr = String(e).toLowerCase();
             const isConnectionError = errorStr.includes('dpi-1010') || 
                                       errorStr.includes('connection refused') || 
@@ -459,6 +544,51 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
             });
         } finally {
             setIsLoading(false);
+            setIsGlobalExecuting(false);
+        }
+    };
+
+    const handleExplain = async () => {
+        if (isGlobalExecuting) return;
+        if (!dbConfig) {
+            updateActiveTab({ error: "Database connection not configured." });
+            return;
+        }
+        if (!sql.trim()) return;
+
+        setIsGlobalExecuting(true);
+        setIsLoading(true);
+        updateActiveTab({ error: null });
+        const startTime = Date.now();
+        try {
+            const plan = await invoke<string>('fetch_explain_plan', {
+                config: dbConfig,
+                sql: sql
+            });
+            const durationMs = Date.now() - startTime;
+            const newLog: SqlLogEntry = {
+                time: new Date().toLocaleTimeString(),
+                sql: `-- EXPLAIN PLAN --\n${sql}`,
+                durationMs,
+                error: undefined // No error
+            };
+
+            // Show plan in logs for now as it's typically text-heavy
+            updateActiveTab({
+                logs: [{
+                    ...newLog,
+                    error: plan // Using error field for text output as it supports whitespace-pre-wrap
+                }, ...(activeTab.logs || [])],
+                activeBottomTab: 'logs'
+            });
+        } catch (e) {
+            updateActiveTab({
+                error: `Explain failed: ${e}`,
+                activeBottomTab: 'logs'
+            });
+        } finally {
+            setIsLoading(false);
+            setIsGlobalExecuting(false);
         }
     };
 
@@ -467,14 +597,36 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
         const pos = e.target.selectionStart;
         updateActiveTab({ sql: value });
         setCursorIdx(pos);
+        setSuggestions(null); // Hide suggestions on type unless user hits Ctrl+Space
+    };
 
-        const textBeforeCursor = value.substring(0, pos);
+    const triggerSuggestions = (pos?: number) => {
+        const currentPos = pos ?? cursorIdx;
+        updateSuggestions(sql, currentPos);
+    };
+
+    const updateSuggestions = (currentSql: string, pos: number) => {
+        
+        // Identify current SQL block (delimited by ;)
+        const blocks = currentSql.split(';');
+        let currentBlock = '';
+        let blockOffset = 0;
+        for (const b of blocks) {
+            const end = blockOffset + b.length;
+            if (pos >= blockOffset && pos <= end + 1) {
+                currentBlock = b;
+                break;
+            }
+            blockOffset = end + 1;
+        }
+
+        const textBeforeInBlock = currentSql.substring(blockOffset, pos);
 
         // 1. Check for JOIN trigger first
-        const joinMatch = textBeforeCursor.match(/(?:^|\s)join\s+([a-zA-Z0-9_]*)$/i);
+        const joinMatch = textBeforeInBlock.match(/(?:^|\s)join\s+([a-zA-Z0-9_]*)$/i);
         if (joinMatch) {
             const typedTarget = joinMatch[1].toLowerCase();
-            const mentioned = data.tables.filter(t => textBeforeCursor.includes(t.name));
+            const mentioned = data.tables.filter(t => currentBlock.includes(t.name));
 
             if (mentioned.length > 0) {
                 let joinItems: string[] = [];
@@ -493,7 +645,7 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                         };
 
                         const getAlias = (tname: string) => {
-                            const m = textBeforeCursor.match(new RegExp(`\\b${tname}\\s+(?:as\\s+)?([a-zA-Z0-9_]+)\\b`, 'i'));
+                            const m = currentBlock.match(new RegExp(`\\b${tname}\\s+(?:as\\s+)?([a-zA-Z0-9_]+)\\b`, 'i'));
                             if (m) {
                                 const potentialAlias = m[1].toLowerCase();
                                 const ignores = ['as', 'join', 'on', 'where', 'select', 'from', 'and', 'or', 'inner', 'left', 'right', 'outer'];
@@ -530,127 +682,112 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
         }
 
         // 2. Normal table/column autocomplete
-        const match = textBeforeCursor.match(/(?:^|\s|,|\()([a-zA-Z0-9_@.]+)$/);
-
-        // 1. Table/Object search with '@'
-        const tableMatch = textBeforeCursor.match(/@(\w*)$/);
-        if (tableMatch) {
-            const search = tableMatch[1].toLowerCase();
-            // Combine ER tables and Database catalog
-            const erTableNames = data.tables.map(t => t.name);
-            const dbObjectNames = catalog.map(o => o.name);
-            const allObjects = Array.from(new Set([...erTableNames, ...dbObjectNames]));
-
-            const filtered = allObjects
-                .filter(name => name.toLowerCase().includes(search))
-                .slice(0, 15);
-            setSuggestions({ type: 'table', items: filtered, replacePrefix: '@' + tableMatch[1] });
-            setSelectedIndex(0);
-            return;
-        }
-
+        const match = textBeforeInBlock.match(/(?:^|\s|,|\()([a-zA-Z0-9_@.]*)$/);
         if (match) {
-            const word = match[1];
-            if (word.includes('.')) {
-                const parts = word.split('.');
-                if (parts.length === 2) {
-                    const aliasOrTable = parts[0];
-                    const search = parts[1].toLowerCase();
+            const typed = match[1].toLowerCase();
+            
+            // Keywords
+            const keywords = ['SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET', 'AS', 'AND', 'OR', 'NOT', 'IN', 'IS', 'NULL', 'COMMIT', 'ROLLBACK', 'CREATE', 'DROP', 'ALTER', 'TRUNCATE', 'DESCRIBE', 'SHOW', 'EXPLAIN'];
+            
+            if (typed.startsWith('@')) {
+                const tableMatch = typed.substring(1);
+                // Combine ER tables and Database catalog
+                const erTableNames = data.tables.map(t => t.name);
+                const dbObjectNames = catalog.map(o => o.name);
+                const allObjects = Array.from(new Set([...erTableNames, ...dbObjectNames]));
 
-                    let targetTableName: string | null = null;
-                    data.tables.forEach(t => {
-                        if (t.name === aliasOrTable) {
-                            targetTableName = t.name;
-                        } else {
-                            const regex1 = new RegExp(`\\b${t.name}\\s+${aliasOrTable}\\b`, 'i');
-                            const regex2 = new RegExp(`\\b${t.name}\\s+AS\\s+${aliasOrTable}\\b`, 'i');
-                            if (regex1.test(value) || regex2.test(value)) {
-                                targetTableName = t.name;
-                            }
-                        }
-                    });
-
-                    if (targetTableName) {
-                        const tableObj = data.tables.find(t => t.name === targetTableName);
-                        if (tableObj) {
-                            const filtered = tableObj.columns.map(c => c.name).filter(n => n.toLowerCase().includes(search));
-                            if (filtered.length > 0) {
-                                setSuggestions({ type: 'column', items: filtered, replacePrefix: word });
-                            } else {
-                                setSuggestions(null);
-                            }
-                        }
-                    } else {
-                        setSuggestions(null);
-                    }
-                } else {
-                    setSuggestions(null);
-                }
-            } else {
-                setSuggestions(null);
+                const filtered = allObjects
+                    .filter(name => name.toLowerCase().includes(tableMatch))
+                    .slice(0, 15);
+                setSuggestions({ type: 'table', items: filtered, replacePrefix: '@' + tableMatch });
+                setSelectedIndex(0);
+                return;
             }
-        } else {
-            setSuggestions(null);
-        }
-    };
 
-    const triggerSuggestions = (pos?: number) => {
-        const currentPos = pos ?? cursorIdx;
-        const textBeforeCursor = sql.substring(0, currentPos);
-        const joinMatch = textBeforeCursor.match(/\bjoin\s+([a-zA-Z0-9_]*)$/i);
-        if (joinMatch) {
-            const fakeEvent = {
-                target: { value: sql, selectionStart: currentPos }
-            } as React.ChangeEvent<HTMLTextAreaElement>;
-            handleInputChange(fakeEvent);
-        } else {
-            // If just Ctrl+Space, and we are at the end of a word or space
-            const fakeEvent = {
-                target: { value: sql, selectionStart: currentPos }
-            } as React.ChangeEvent<HTMLTextAreaElement>;
-            handleInputChange(fakeEvent);
+            if (typed.includes('.')) {
+                const parts = typed.split('.');
+                const tableOrAlias = parts[0];
+                const typedCol = parts[1] || '';
+                
+                // Identify real table name
+                let realTableName = tableOrAlias;
+                const aliasMatch = currentBlock.match(new RegExp(`\\b(\\w+)\\s+(?:as\\s+)?${tableOrAlias}\\b`, 'i'));
+                if (aliasMatch) {
+                    realTableName = aliasMatch[1];
+                }
+
+                // 1. Try ER Diagram tables
+                const erTable = data.tables.find(t => t.name.toLowerCase() === realTableName.toLowerCase());
+                if (erTable) {
+                    const colMatches = erTable.columns
+                        .map(c => c.name)
+                        .filter(name => name.toLowerCase().startsWith(typedCol.toLowerCase()))
+                        .sort();
+                    if (colMatches.length > 0) {
+                        setSuggestions({ type: 'column', items: colMatches, replacePrefix: typedCol });
+                        return;
+                    }
+                }
+
+                // 2. Try Cached Columns (Live DB)
+                const colMatchesCached = (cachedColumns[realTableName] || [])
+                    .filter((c: string) => c.toLowerCase().startsWith(typedCol.toLowerCase()))
+                    .sort();
+                
+                if (colMatchesCached.length > 0) {
+                    setSuggestions({ type: 'column', items: colMatchesCached, replacePrefix: typedCol });
+                    return;
+                }
+            }
+            
+            const filteredKeywords = keywords.filter(k => k.toLowerCase().startsWith(typed));
+            if (filteredKeywords.length > 0 && typed.length > 0) {
+                setSuggestions({ type: 'table', items: filteredKeywords, replacePrefix: typed });
+                return;
+            }
         }
+        setSuggestions(null);
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === 'r' && e.ctrlKey) {
-            e.preventDefault();
-            const textarea = e.currentTarget;
-            let queryToRun = sql;
-            if (textarea.selectionStart !== textarea.selectionEnd) {
-                queryToRun = sql.substring(textarea.selectionStart, textarea.selectionEnd);
+        if (suggestions) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setSelectedIndex((prev) => (prev + 1) % suggestions.items.length);
+                return;
             }
-            handleExecute(0, queryToRun);
-            return;
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setSelectedIndex((prev) => (prev - 1 + suggestions.items.length) % suggestions.items.length);
+                return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                insertSuggestion(suggestions.items[selectedIndex]);
+                return;
+            }
+            if (e.key === 'Escape') {
+                setSuggestions(null);
+                return;
+            }
         }
 
-        if (e.key === ' ' && e.ctrlKey) {
+        // Ctrl+Space for autocomplete
+        if (e.ctrlKey && e.code === 'Space') {
             e.preventDefault();
             triggerSuggestions(e.currentTarget.selectionStart);
             return;
         }
 
-        if (!suggestions || suggestions.items.length === 0) return;
-
-        if (e.key === 'ArrowDown') {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
-            setSelectedIndex(prev => {
-                const next = (prev + 1) % suggestions.items.length;
-                scrollToSuggestion(next);
-                return next;
-            });
-        } else if (e.key === 'ArrowUp') {
+            handleExecute();
+            return;
+        }
+        if (e.key === 'r' && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
-            setSelectedIndex(prev => {
-                const next = (prev - 1 + suggestions.items.length) % suggestions.items.length;
-                scrollToSuggestion(next);
-                return next;
-            });
-        } else if (e.key === 'Enter' || e.key === 'Tab') {
-            e.preventDefault();
-            insertSuggestion(suggestions.items[selectedIndex]);
-        } else if (e.key === 'Escape') {
-            setSuggestions(null);
+            handleExecute();
+            return;
         }
     };
 
@@ -725,18 +862,26 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
         if (!suggestions) return;
         const textBeforeWord = sql.substring(0, cursorIdx - suggestions.replacePrefix.length);
 
+        // Calculate suffix to replace (rest of the word after cursor)
+        const after = sql.substring(cursorIdx);
+        const suffixMatch = after.match(/^[\w$]+/);
+        const suffixLength = suffixMatch ? suffixMatch[0].length : 0;
+        const actualAfter = after.substring(suffixLength);
+
         let insertText = suggestion;
         if (suggestions.type === 'column') {
             const parts = suggestions.replacePrefix.split('.');
-            insertText = parts[0] + '.' + suggestion;
+            if (parts.length > 1) {
+                insertText = parts[0] + '.' + suggestion;
+            }
         }
 
         if (suggestions.type === 'join' || suggestions.type === 'table') {
             insertText += ' ';
         }
 
-        const after = sql.substring(cursorIdx);
-        updateActiveTab({ sql: textBeforeWord + insertText + after });
+        const newSql = textBeforeWord + insertText + actualAfter;
+        updateActiveTab({ sql: newSql });
         setSuggestions(null);
         setPendingCursor(textBeforeWord.length + insertText.length);
         textareaRef.current?.focus();
@@ -750,7 +895,11 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
     const closeTab = (e: React.MouseEvent, id: string) => {
         e.stopPropagation();
         removeSqlTab(id);
-        invoke('close_db_session', { tabId: id }).catch(console.error);
+        // We now share the session, so we don't necessarily want to close the shared session when just one tab closes.
+        // But if it was the last tab, maybe we should. For now, following user's shared session request.
+        if (tabs.length === 1) {
+            invoke('close_db_session').catch(console.error);
+        }
     };
 
     // Column Resizer
@@ -778,10 +927,11 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
     };
 
     const handleCommit = async () => {
-        if (!dbConfig) return;
+        if (!dbConfig || isGlobalExecuting) return;
+        setIsGlobalExecuting(true);
         setIsLoading(true);
         try {
-            await invoke('commit_transaction', { tabId: activeTabId });
+            await invoke('commit_transaction');
             const newLog: SqlLogEntry = {
                 time: new Date().toLocaleTimeString(),
                 sql: 'COMMIT;',
@@ -789,20 +939,23 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
             };
             updateActiveTab({
                 logs: [newLog, ...(activeTab.logs || [])],
-                activeBottomTab: 'logs'
+                activeBottomTab: 'logs',
+                results: activeTab.results ? { ...activeTab.results, has_uncommitted_changes: false } : null
             });
         } catch (e) {
             updateActiveTab({ error: String(e) });
         } finally {
             setIsLoading(false);
+            setIsGlobalExecuting(false);
         }
     };
 
     const handleRollback = async () => {
-        if (!dbConfig) return;
+        if (!dbConfig || isGlobalExecuting) return;
+        setIsGlobalExecuting(true);
         setIsLoading(true);
         try {
-            await invoke('rollback_transaction', { tabId: activeTabId });
+            await invoke('rollback_transaction');
             const newLog: SqlLogEntry = {
                 time: new Date().toLocaleTimeString(),
                 sql: 'ROLLBACK;',
@@ -810,33 +963,25 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
             };
             updateActiveTab({
                 logs: [newLog, ...(activeTab.logs || [])],
-                activeBottomTab: 'logs'
+                activeBottomTab: 'logs',
+                results: activeTab.results ? { ...activeTab.results, has_uncommitted_changes: false } : null
             });
         } catch (e) {
             updateActiveTab({ error: String(e) });
         } finally {
             setIsLoading(false);
+            setIsGlobalExecuting(false);
         }
     };
 
-    const fetchCatalog = async () => {
-        if (!dbConfig) return;
-        try {
-            const res = await invoke<DbObject[]>('fetch_db_catalog', { config: dbConfig });
-            setCatalog(res);
-        } catch (e) {
-            console.error("Failed to fetch catalog:", e);
-        }
-    };
-
-    useEffect(() => {
-        if (dbConfig) {
-            fetchCatalog();
-        }
-    }, [dbConfig]);
 
     return (
-        <div className="flex flex-col h-full bg-neutral-900 text-neutral-200 overflow-hidden max-w-full">
+        <div className="flex flex-col h-full bg-neutral-900 text-neutral-200 overflow-hidden max-w-full relative">
+            {isGlobalExecuting && (
+                <div className="absolute top-0 left-0 w-full h-0.5 z-[100] bg-blue-500 overflow-hidden">
+                    <div className="w-full h-full bg-blue-400 animate-progress origin-left"></div>
+                </div>
+            )}
             {/* Tabs Header */}
             <div className="flex items-center gap-1 px-4 py-2 border-b border-neutral-800 bg-neutral-900/50">
                 {!isSidebarOpen && <div className="w-10"></div>}
@@ -888,29 +1033,51 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                             Format
                         </button>
                         <button
-                            onClick={() => handleExecute(0)}
-                            disabled={isLoading}
-                            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-4 py-1.5 rounded-lg text-sm font-bold transition-all"
-                            title="Execute SQL (Ctrl+R)"
+                            onClick={() => handleExecute()}
+                            disabled={isGlobalExecuting}
+                            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-bold transition-all shadow-lg active:scale-95 ${
+                                isGlobalExecuting ? 'bg-neutral-800 text-neutral-600' : 'bg-blue-600 text-white hover:bg-blue-500 shadow-blue-900/20'
+                            }`}
+                            title="Execute SQL (Ctrl+R / Tab: Ctrl+Enter)"
                         >
                             <Play size={14} fill="currentColor" />
                             Execute
+                        </button>
+
+                        <button
+                            onClick={handleExplain}
+                            disabled={isGlobalExecuting}
+                            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-bold transition-all shadow-lg active:scale-95 border ${
+                                isGlobalExecuting ? 'bg-neutral-800 text-neutral-600 border-neutral-700' : 'bg-neutral-800 text-amber-400 border-amber-500/30 hover:bg-neutral-700'
+                            }`}
+                            title="Show Execution Plan"
+                        >
+                            <Terminal size={14} />
+                            Explain
                         </button>
                         {dbConfig && (
                             <>
                                 <div className="w-px h-6 bg-neutral-700 mx-1"></div>
                                 <button
                                     onClick={handleCommit}
-                                    disabled={isLoading}
-                                    className="flex items-center gap-2 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-500/30 disabled:opacity-50 px-3 py-1.5 rounded-lg text-sm font-bold transition-all"
+                                    disabled={isGlobalExecuting}
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-bold transition-all shadow-lg ${
+                                        activeTab.results?.has_uncommitted_changes 
+                                        ? 'bg-emerald-600 text-white hover:bg-emerald-500 shadow-emerald-900/20' 
+                                        : 'bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-500/30'
+                                    }`}
                                     title="Commit Transaction"
                                 >
                                     Commit
                                 </button>
                                 <button
                                     onClick={handleRollback}
-                                    disabled={isLoading}
-                                    className="flex items-center gap-2 bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30 disabled:opacity-50 px-3 py-1.5 rounded-lg text-sm font-bold transition-all"
+                                    disabled={isGlobalExecuting}
+                                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-bold transition-all ${
+                                        activeTab.results?.has_uncommitted_changes 
+                                        ? 'bg-red-600 text-white hover:bg-red-500 shadow-xl shadow-red-900/20' 
+                                        : 'bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30'
+                                    }`}
                                     title="Rollback Transaction"
                                 >
                                     Rollback
@@ -931,9 +1098,19 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
 
                     <div className="flex items-center gap-2">
                         {dbConfig ? (
-                            <button onClick={onOpenDbConnect} className={`text-[10px] px-3 py-1.5 rounded uppercase font-black transition-colors cursor-pointer flex items-center gap-1 ${dbConnectionStatus === 'connected' ? 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20'}`}>
+                            <button onClick={onOpenDbConnect} className={`text-[10px] px-3 py-1.5 rounded uppercase font-black transition-colors cursor-pointer flex items-center gap-1 border ${
+                                dbConnectionStatus !== 'connected' 
+                                    ? 'bg-red-500/10 hover:bg-red-500/20 text-red-500 border-red-500/20' 
+                                    : activeTab.results?.has_uncommitted_changes
+                                        ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-500 border-amber-500/40 shadow-lg shadow-amber-900/20'
+                                        : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/20'
+                            }`}>
                                 {dbConnectionStatus === 'connected' ? (
-                                    <>CONNECTED: {dbConfig.host}</>
+                                    activeTab.results?.has_uncommitted_changes ? (
+                                        <><AlertCircle size={12} className="animate-pulse" /> UNCOMMITTED: {dbConfig.host}</>
+                                    ) : (
+                                        <>CONNECTED: {dbConfig.host}</>
+                                    )
                                 ) : (
                                     <><AlertCircle size={12} /> CONNECTION ERROR: {dbConfig.host}</>
                                 )}
@@ -1140,7 +1317,7 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                     </div>
                     {contextMenu && (
                         <div
-                            className="fixed z-50 bg-neutral-800 border border-neutral-700 rounded-md shadow-xl py-1 text-xs text-neutral-300 min-w-[200px]"
+                            className="context-menu fixed z-50 bg-neutral-800 border border-neutral-700 rounded-md shadow-xl py-1 text-xs text-neutral-300 min-w-[200px]"
                             style={{ top: contextMenu.y, left: contextMenu.x }}
                             onClick={(e) => e.stopPropagation()}
                         >

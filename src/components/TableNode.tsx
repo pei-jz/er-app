@@ -158,19 +158,36 @@ const TableNode: React.FC<TableNodeProps> = ({ data }) => {
 
                     return (
                         <div key={`${col.name}-${idx}`} className={`relative flex items-center justify-between gap-3 text-[10px] group rounded px-1 py-0.5 transition-colors ${colHighlightClass}`}>
+                            {/* Left Side Target Handle (Small dot for UX) */}
+                            <Handle
+                                type="target"
+                                position={Position.Left}
+                                id={`${col.name}:::${idx}:::left:::target`}
+                                style={{
+                                    left: -6,
+                                    background: '#10b981',
+                                    width: 10,
+                                    height: 10,
+                                    border: '2px solid white',
+                                    zIndex: 11,
+                                    opacity: data.pendingConnection ? 1 : 0
+                                }}
+                                className="transition-all hover:scale-125 cursor-crosshair shadow-lg"
+                            />
+
                             {/* Left Side Source Handle (Small dot for UX) */}
                             <Handle
                                 type="source"
                                 position={Position.Left}
-                                id={`${col.name}-${idx}-left-source`}
+                                id={`${col.name}:::${idx}:::left:::source`}
                                 style={{
                                     left: -6,
-                                    background: isSourceHandle(`${col.name}-${idx}-left-source`) ? '#10b981' : '#3b82f6',
-                                    width: isSourceHandle(`${col.name}-${idx}-left-source`) ? 12 : 10,
-                                    height: isSourceHandle(`${col.name}-${idx}-left-source`) ? 12 : 10,
+                                    background: isSourceHandle(`${col.name}:::${idx}:::left:::source`) ? '#10b981' : '#3b82f6',
+                                    width: isSourceHandle(`${col.name}:::${idx}:::left:::source`) ? 12 : 10,
+                                    height: isSourceHandle(`${col.name}:::${idx}:::left:::source`) ? 12 : 10,
                                     border: '2px solid white',
                                     zIndex: 10,
-                                    opacity: (data.pendingConnection || isSourceHandle(`${col.name}-${idx}-left-source`)) ? 1 : 0
+                                    opacity: (data.pendingConnection || isSourceHandle(`${col.name}:::${idx}:::left:::source`)) ? 1 : 0
                                 }}
                                 className="transition-all hover:scale-125 cursor-crosshair group-hover:opacity-100 shadow-lg"
                             />
@@ -186,19 +203,36 @@ const TableNode: React.FC<TableNodeProps> = ({ data }) => {
                                 {isFK && !isLowDetail && <span className="text-emerald-500/50 text-[5px] font-black leading-none truncate max-w-[60px]">→ {col.references_table}</span>}
                             </div>
 
+                            {/* Right Side Target Handle (Small dot for UX) */}
+                            <Handle
+                                type="target"
+                                position={Position.Right}
+                                id={`${col.name}:::${idx}:::right:::target`}
+                                style={{
+                                    right: -6,
+                                    background: '#10b981',
+                                    width: 10,
+                                    height: 10,
+                                    border: '2px solid white',
+                                    zIndex: 11,
+                                    opacity: data.pendingConnection ? 1 : 0
+                                }}
+                                className="transition-all hover:scale-125 cursor-crosshair shadow-lg"
+                            />
+
                             {/* Right Side Source Handle (Small dot for UX) */}
                             <Handle
                                 type="source"
                                 position={Position.Right}
-                                id={`${col.name}-${idx}-right-source`}
+                                id={`${col.name}:::${idx}:::right:::source`}
                                 style={{
                                     right: -6,
-                                    background: isSourceHandle(`${col.name}-${idx}-right-source`) ? '#10b981' : '#3b82f6',
-                                    width: isSourceHandle(`${col.name}-${idx}-right-source`) ? 12 : 10,
-                                    height: isSourceHandle(`${col.name}-${idx}-right-source`) ? 12 : 10,
+                                    background: isSourceHandle(`${col.name}:::${idx}:::right:::source`) ? '#10b981' : '#3b82f6',
+                                    width: isSourceHandle(`${col.name}:::${idx}:::right:::source`) ? 12 : 10,
+                                    height: isSourceHandle(`${col.name}:::${idx}:::right:::source`) ? 12 : 10,
                                     border: '2px solid white',
                                     zIndex: 10,
-                                    opacity: (data.pendingConnection || isSourceHandle(`${col.name}-${idx}-right-source`)) ? 1 : 0
+                                    opacity: (data.pendingConnection || isSourceHandle(`${col.name}:::${idx}:::right:::source`)) ? 1 : 0
                                 }}
                                 className="transition-all hover:scale-125 cursor-crosshair group-hover:opacity-100 shadow-lg"
                             />

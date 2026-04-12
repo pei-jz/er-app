@@ -1,8 +1,9 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useErSqlActions } from '../hooks/useErData';
 import { ErDiagramData, ColumnMetadata, MetadataSettings, TableMetadata, DbConfig } from '../types/er';
-import { Table, List, Settings as SettingsIcon, Search, ArrowRight, Database, Layers, CheckCircle2, Edit3, GitCommit, Terminal } from 'lucide-react';
+import { Table, List, Settings as SettingsIcon, Search, ArrowRight, Database, Layers, CheckCircle2, Edit3, GitCommit, Terminal, Loader2, RefreshCw } from 'lucide-react';
 import { invoke } from "@tauri-apps/api/core";
+import LiveDbSearch, { DbObject } from './LiveDbSearch';
 
 interface MetadataEditorProps {
     data: ErDiagramData;
@@ -15,10 +16,6 @@ interface MetadataEditorProps {
     appMode: 'design' | 'db' | 'welcome';
 }
 
-interface DbObject {
-    name: string;
-    object_type: string;
-}
 
 type EditorTab = 'tables' | 'columns' | 'indices' | 'procedures' | 'functions' | 'synonyms' | 'packages';
 
@@ -41,10 +38,50 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
         setPage(1); // Reset page on tab or search change
     }, [activeTab, searchTerm]);
 
+    const [selectedObject, setSelectedObject] = useState<DbObject | null>(null);
+    const [onDemandTable, setOnDemandTable] = useState<TableMetadata | null>(null);
+    const [isTableLoading, setIsTableLoading] = useState(false);
+    const [recentObjects, setRecentObjects] = useState<DbObject[]>([]);
+
     useEffect(() => {
         if (initialTab) setActiveTab(initialTab);
         if (initialSearch !== undefined) setSearchTerm(initialSearch);
     }, [initialTab, initialSearch]);
+
+    useEffect(() => {
+        try {
+            const saved = localStorage.getItem('recent_metadata_objects');
+            if (saved) setRecentObjects(JSON.parse(saved));
+        } catch (e) {
+            console.error("Failed to load recent objects", e);
+        }
+    }, []);
+
+    const fetchTableDetail = async (name: string) => {
+        if (!dbConfig) return;
+        setIsTableLoading(true);
+        try {
+            const res = await invoke<TableMetadata>('fetch_table_columns', { config: dbConfig, tableName: name });
+            setOnDemandTable(res);
+        } catch (e) {
+            console.error("Failed to fetch table columns:", e);
+        } finally {
+            setIsTableLoading(false);
+        }
+    };
+
+    const handleObjectSelect = (obj: DbObject) => {
+        setSelectedObject(obj);
+        setOnDemandTable(null);
+        if (obj.object_type.toUpperCase() === 'TABLE' || obj.object_type.toUpperCase() === 'VIEW') {
+            fetchTableDetail(obj.name);
+        }
+
+        // Update recently viewed
+        const updated = [obj, ...recentObjects.filter(o => o.name !== obj.name || o.object_type !== obj.object_type)].slice(0, 10);
+        setRecentObjects(updated);
+        localStorage.setItem('recent_metadata_objects', JSON.stringify(updated));
+    };
 
     const fetchCatalog = async () => {
         if (!dbConfig) return;
@@ -259,8 +296,118 @@ const MetadataEditor: React.FC<MetadataEditorProps> = ({
                 </div>
             </div>
 
-            {/* Content Area */}
-            <div className="flex-1 overflow-auto p-6 scroll-smooth">
+            {appMode === 'db' && !selectedObject && (
+                <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-12">
+                    <div className="text-center space-y-2">
+                        <h2 className="text-3xl font-black bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
+                            Live Database Explorer
+                        </h2>
+                        <p className="text-neutral-500 text-sm font-medium">Search for any architectural object in your connected database</p>
+                    </div>
+                    <LiveDbSearch
+                        catalog={catalog}
+                        recentObjects={recentObjects}
+                        onSelect={handleObjectSelect}
+                    />
+                </div>
+            )}
+
+            {appMode === 'db' && selectedObject && (
+                <div className="flex-1 flex flex-col min-h-0 bg-neutral-900">
+                    <div className="px-6 py-4 border-b border-neutral-800 flex items-center justify-between sticky top-0 z-30 bg-neutral-900/80 backdrop-blur-md">
+                        <div className="flex items-center gap-4">
+                            <button
+                                onClick={() => setSelectedObject(null)}
+                                className="p-2 hover:bg-neutral-800 rounded-lg text-neutral-500 hover:text-white transition-colors"
+                            >
+                                <ArrowRight className="rotate-180" size={18} />
+                            </button>
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-xl bg-blue-600/20 flex items-center justify-center text-blue-400">
+                                    <Table size={20} />
+                                </div>
+                                <div>
+                                    <h2 className="text-xl font-black text-neutral-100 uppercase tracking-tight">{selectedObject.name}</h2>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-[10px] font-black uppercase tracking-widest text-neutral-500 px-1.5 py-0.5 rounded border border-neutral-800">{selectedObject.object_type}</span>
+                                        <span className="text-[10px] text-blue-400 font-bold">{dbConfig?.db_name}@{dbConfig?.host}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => fetchTableDetail(selectedObject.name)}
+                                className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 px-4 py-2 rounded-xl text-xs font-bold transition-all border border-neutral-700"
+                            >
+                                <RefreshCw size={14} className={isTableLoading ? 'animate-spin' : ''} />
+                                Refresh
+                            </button>
+                            <button
+                                onClick={() => onOpenSchemaChange(selectedObject.name)}
+                                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-lg"
+                            >
+                                <Edit3 size={14} />
+                                Schema Change
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 overflow-auto p-6 space-y-6">
+                        {isTableLoading ? (
+                            <div className="h-full flex flex-col items-center justify-center space-y-4 opacity-50">
+                                <Loader2 size={32} className="animate-spin text-blue-500" />
+                                <p className="text-sm font-bold text-neutral-400">Fetching column metadata...</p>
+                            </div>
+                        ) : onDemandTable ? (
+                            <div className="animate-in fade-in slide-in-from-top-4 duration-500 space-y-6">
+                                <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                                    <div className="lg:col-span-3 space-y-6">
+                                        <TableColumnsView
+                                            table={onDemandTable}
+                                            searchTerm={searchTerm}
+                                            settings={settings}
+                                            selected={true}
+                                            onEdit={() => onOpenSchemaChange(onDemandTable.name)}
+                                            onColContextMenu={handleColContextMenu}
+                                        />
+                                    </div>
+                                    <div className="space-y-6">
+                                        <div className="bg-neutral-800/20 rounded-2xl p-4 border border-neutral-800/50 space-y-4">
+                                            <h3 className="text-[10px] font-black text-neutral-500 uppercase tracking-widest flex items-center gap-2">
+                                                <Layers size={10} className="text-indigo-400" /> Quick Actions
+                                            </h3>
+                                            <div className="flex flex-col gap-2">
+                                                <button
+                                                    onClick={() => generateInsertForTable(onDemandTable.name)}
+                                                    className="w-full text-left px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded-xl text-xs text-neutral-300 transition-all flex items-center gap-3"
+                                                >
+                                                    <Terminal size={14} className="text-pink-400" />
+                                                    Generate INSERT
+                                                </button>
+                                                <button
+                                                    onClick={() => addSqlTab(`Select ${onDemandTable.name}`, `SELECT * FROM ${onDemandTable.name} LIMIT 100;`)}
+                                                    className="w-full text-left px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded-xl text-xs text-neutral-300 transition-all flex items-center gap-3"
+                                                >
+                                                    <Search size={14} className="text-blue-400" />
+                                                    Explore Data (SQL)
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="h-full flex flex-col items-center justify-center opacity-50">
+                                <p className="text-sm font-bold text-neutral-400">No column information available for this object type.</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Content Area (Existing, hidden in DB mode if search is active) */}
+            <div className={`flex-1 overflow-auto p-6 scroll-smooth ${appMode === 'db' ? 'hidden' : ''}`}>
                 {activeTab === 'tables' && (
                     <div className="bg-neutral-800/20 rounded-2xl border border-neutral-800/50 overflow-hidden shadow-2xl transition-opacity">
                         <Pagination total={filteredTables.length} page={page} setPage={setPage} pageSize={PAGE_SIZE} />

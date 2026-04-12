@@ -35,7 +35,7 @@ interface DiagramCanvasProps {
     onUpdateCategoryPosition: (id: string, x: number, y: number) => void;
     onEditCategory?: (cat: CategoryMetadata) => void;
     addTablesToCategory?: (categoryId: string, tableNames: string[]) => void;
-    addForeignKey: (sourceTable: string, sourceCol: string, targetTable: string, targetCol: string) => void;
+    addForeignKey: (sourceTable: string, targetTable: string, pairs: { source: string, target: string }[]) => void;
     removeForeignKey: (sourceTable: string, sourceCol: string) => void;
     onEdgeSelect?: (edgeId: string | null) => void; // Added for edge selection
     onTableDoubleClick?: (tableName: string) => void;
@@ -61,6 +61,7 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
     const [pendingConnection, setPendingConnection] = useState<PendingConnection | null>(null);
     const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+    const [isCtrlPressed, setIsCtrlPressed] = useState(false);
     const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
     const [showConfirmModal, setShowConfirmModal] = useState(false);
     const [isLayouting, setIsLayouting] = useState(false);
@@ -124,6 +125,27 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
         };
     };
 
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Control') setIsCtrlPressed(true);
+        };
+        const handleKeyUp = (e: KeyboardEvent) => {
+            if (e.key === 'Control') setIsCtrlPressed(false);
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+        
+        // Safety: ensure if window loses focus we reset state
+        const handleBlur = () => setIsCtrlPressed(false);
+        window.addEventListener('blur', handleBlur);
+
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+            window.removeEventListener('blur', handleBlur);
+        };
+    }, []);
+
     // Track mouse position everywhere for smooth preview
     useEffect(() => {
         if (!pendingConnection) return;
@@ -162,16 +184,21 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
             const source = pendingConnection;
             const target = params;
 
-            const sParts = source.handleId.split('-');
-            const tParts = target.handleId.split('-');
-
-            if (sParts.length >= 3 && tParts.length >= 3) {
-                // Handle format: [colName]-[side]-[type]
-                const sourceCol = sParts.slice(0, -2).join('-');
-                const targetCol = tParts.slice(0, -2).join('-');
+            if (source.handleId.includes(':::') && target.handleId.includes(':::')) {
+                const sParts = source.handleId.split(':::');
+                const tParts = target.handleId.split(':::');
+                const sourceCol = sParts[0];
+                const targetCol = tParts[0];
 
                 if (sourceCol && targetCol && source.nodeId !== target.nodeId) {
-                    addForeignKey(source.nodeId, sourceCol, target.nodeId, targetCol);
+                    addForeignKey(source.nodeId, target.nodeId, [{ source: sourceCol, target: targetCol }]);
+                }
+            } else if (source.handleId.includes(':::') && target.handleId.includes('slot')) {
+                // Dragging from a column to a table's perimeter
+                const sourceCol = source.handleId.split(':::')[0];
+                if (sourceCol && source.nodeId !== target.nodeId) {
+                    // Default to 'id' or ask? For now default to 'id' as it's common.
+                    addForeignKey(source.nodeId, target.nodeId, [{ source: sourceCol, target: 'id' }]);
                 }
             }
             setPendingConnection(null);
@@ -190,15 +217,17 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
         const sHandleId = params.sourceHandle || '';
         const tHandleId = params.targetHandle || '';
 
-        const sParts = sHandleId.split('-');
-        const tParts = tHandleId.split('-');
-
-        if (sParts.length >= 3 && tParts.length >= 3) {
-            const sourceCol = sParts.slice(0, -2).join('-');
-            const targetCol = tParts.slice(0, -2).join('-');
+        if (sHandleId.includes(':::') && tHandleId.includes(':::')) {
+            const sourceCol = sHandleId.split(':::')[0];
+            const targetCol = tHandleId.split(':::')[0];
 
             if (sourceCol && targetCol) {
-                addForeignKey(params.source, sourceCol, params.target, targetCol);
+                addForeignKey(params.source, params.target, [{ source: sourceCol, target: targetCol }]);
+            }
+        } else if (sHandleId.includes(':::') && tHandleId.includes('slot')) {
+            const sourceCol = sHandleId.split(':::')[0];
+            if (sourceCol) {
+                addForeignKey(params.source, params.target, [{ source: sourceCol, target: 'id' }]);
             }
         }
         setPendingConnection(null);
@@ -703,10 +732,11 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
         deletedEdges.forEach(edge => {
             if (edge.type === 'er-edge') {
                 const sHandleId = edge.sourceHandle || '';
-                const sParts = sHandleId.split('-');
-                const sourceCol = sParts.slice(0, -2).join('-');
-                if (sourceCol) {
-                    removeForeignKey(edge.source, sourceCol);
+                if (sHandleId.includes(':::')) {
+                    const sourceCol = sHandleId.split(':::')[0];
+                    if (sourceCol) {
+                        removeForeignKey(edge.source, sourceCol);
+                    }
                 }
             }
         });
@@ -715,7 +745,7 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
 
 
     return (
-        <div className="w-full h-full bg-neutral-900 overflow-hidden relative group">
+        <div className={`w-full h-full bg-neutral-900 overflow-hidden relative group ${isCtrlPressed ? 'er-ctrl-pressed' : ''}`}>
             <div className="absolute top-6 left-6 z-10 flex items-center gap-2 bg-neutral-800/80 backdrop-blur-xl border border-neutral-700/50 p-1.5 rounded-2xl shadow-2xl">
                 <button
                     onClick={() => onSelectCategory(null)}

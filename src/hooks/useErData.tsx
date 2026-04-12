@@ -6,6 +6,7 @@ export interface QueryResult {
     rows: string[][];
     has_more: boolean;
     total_count?: number;
+    has_uncommitted_changes: boolean;
 }
 
 export interface SqlLogEntry {
@@ -31,6 +32,7 @@ export interface SqlEditorTab {
 interface ErSqlContextType {
     sqlTabs: SqlEditorTab[];
     activeSqlTabId: string;
+    isGlobalExecuting: boolean;
 }
 
 interface ErSqlActionsContextType {
@@ -38,6 +40,7 @@ interface ErSqlActionsContextType {
     addSqlTab: (name?: string, initialSql?: string) => string;
     removeSqlTab: (id: string) => void;
     updateSqlTab: (id: string, updates: Partial<SqlEditorTab>) => void;
+    setIsGlobalExecuting: (executing: boolean) => void;
 }
 
 interface ErDiagramContextType {
@@ -59,7 +62,7 @@ interface ErDiagramContextType {
     addTablesToCategory: (categoryId: string, tableNames: string[]) => void;
     updateTablePosition: (tableName: string, x: number, y: number) => void;
     updateCategoryPosition: (categoryId: string, x: number, y: number) => void;
-    addForeignKey: (sourceTable: string, sourceCol: string, targetTable: string, targetCol: string) => void;
+    addForeignKey: (sourceTable: string, targetTable: string, pairs: { source: string, target: string }[]) => void;
     removeForeignKey: (sourceTable: string, sourceCol: string) => void;
     saveSnapshot: (snapshot: SchemaSnapshot) => void;
     updateSettings: (settings: Partial<MetadataSettings>) => void;
@@ -122,6 +125,7 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
         }
     ]);
     const [activeSqlTabId, setActiveSqlTabId] = useState<string>('tab-1');
+    const [isGlobalExecuting, setIsGlobalExecutingState] = useState<boolean>(false);
 
     // --- SQL ACTION WRAPPERS ---
     const addSqlTab = useCallback((name?: string, initialSql?: string) => {
@@ -210,7 +214,7 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
                                 mergedColumns[colIdx] = {
                                     ...current,
                                     ...nc,
-                                    version: current.version + 1,
+                                    version: (current.version || 1) + 1,
                                     last_modified: Date.now()
                                 };
                             }
@@ -260,8 +264,8 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
                         columns: t.columns.map(c => c.name === columnName ? {
                             ...c,
                             ...updates,
-                            version: (updates.name || updates.data_type) ? c.version + 1 : c.version,
-                            last_modified: (updates.name || updates.data_type) ? Date.now() : c.last_modified
+                            version: (updates.name || updates.data_type) ? (c.version || 1) + 1 : (c.version || 1),
+                            last_modified: (updates.name || updates.data_type) ? Date.now() : (c.last_modified || Date.now())
                         } : c)
                     };
                 }
@@ -273,14 +277,14 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
     const addIndex = (tableName: string, index: IndexMetadata) => {
         setData(prev => ({
             ...prev,
-            tables: prev.tables.map(t => t.name === tableName ? { ...t, indices: [...t.indices, index] } : t)
+            tables: prev.tables.map(t => t.name === tableName ? { ...t, indices: [...(t.indices || []), index] } : t)
         }));
     };
 
     const removeIndex = (tableName: string, indexName: string) => {
         setData(prev => ({
             ...prev,
-            tables: prev.tables.map(t => t.name === tableName ? { ...t, indices: t.indices.filter(idx => idx.name !== indexName) } : t)
+            tables: prev.tables.map(t => t.name === tableName ? { ...t, indices: (t.indices || []).filter(idx => idx.name !== indexName) } : t)
         }));
     };
 
@@ -308,10 +312,10 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
             ...prev,
             tables: prev.tables.map(t => {
                 if (t.name === tableName) {
-                    const colName = `col_${t.columns.length + 1}`;
+                    const colName = `col_${(t.columns || []).length + 1}`;
                     return {
                         ...t,
-                        columns: [...t.columns, {
+                        columns: [...(t.columns || []), {
                             name: colName,
                             data_type: 'varchar(255)',
                             is_primary_key: false,
@@ -330,14 +334,14 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
     const addCategory = (category: CategoryMetadata) => {
         setData(prev => ({
             ...prev,
-            categories: [...prev.categories, category]
+            categories: [...(prev.categories || []), category]
         }));
     };
 
     const updateCategory = (id: string, updates: Partial<CategoryMetadata>) => {
         setData(prev => ({
             ...prev,
-            categories: prev.categories.map(c => c.id === id ? { ...c, ...updates } : c)
+            categories: (prev.categories || []).map(c => c.id === id ? { ...c, ...updates } : c)
         }));
     };
 
@@ -388,25 +392,24 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
         }));
     };
 
-    const addForeignKey = (sourceTable: string, sourceCol: string, targetTable: string, targetCol: string) => {
+    const addForeignKey = (sourceTable: string, targetTable: string, pairs: { source: string, target: string }[]) => {
         setData(prev => ({
             ...prev,
             tables: prev.tables.map(t => {
                 if (t.name === sourceTable) {
-                    return {
-                        ...t,
-                        columns: t.columns.map(c => {
-                            if (c.name === sourceCol) {
-                                return {
-                                    ...c,
-                                    is_foreign_key: true,
-                                    references_table: targetTable,
-                                    references_column: targetCol,
-                                };
-                            }
-                            return c;
-                        })
-                    };
+                    const newColumns = t.columns.map(c => {
+                        const pair = pairs.find(p => p.source === c.name);
+                        if (pair) {
+                            return {
+                                ...c,
+                                is_foreign_key: true,
+                                references_table: targetTable,
+                                references_column: pair.target,
+                            };
+                        }
+                        return c;
+                    });
+                    return { ...t, columns: newColumns };
                 }
                 return t;
             })
@@ -499,17 +502,9 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
         }));
     };
 
-    const sqlValue = useMemo(() => ({
-        sqlTabs,
-        activeSqlTabId
-    }), [sqlTabs, activeSqlTabId]);
-
-    const sqlActionsValue = useMemo(() => ({
-        setActiveSqlTabId,
-        addSqlTab,
-        removeSqlTab,
-        updateSqlTab
-    }), [setActiveSqlTabId, addSqlTab, removeSqlTab, updateSqlTab]);
+    const setIsGlobalExecuting = (executing: boolean) => {
+        setIsGlobalExecutingState(executing);
+    };
 
     const diagramValue = useMemo(() => ({
         data,
@@ -535,7 +530,7 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
         saveSnapshot,
         updateSettings
     }), [
-        data, setData, addTables, clearTables, addTable, updateTable, addColumn,
+        data, addTables, clearTables, addTable, updateTable, addColumn,
         updateColumn, addIndex, removeIndex, duplicateTable, duplicateColumn,
         addCategory, updateCategory, setTablesForCategory, addTablesToCategory,
         updateTablePosition, updateCategoryPosition, addForeignKey, removeForeignKey,
@@ -543,8 +538,14 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
     ]);
 
     return (
-        <ErSqlContext.Provider value={sqlValue}>
-            <ErSqlActionsContext.Provider value={sqlActionsValue}>
+        <ErSqlContext.Provider value={{ sqlTabs, activeSqlTabId, isGlobalExecuting }}>
+            <ErSqlActionsContext.Provider value={{ 
+                setActiveSqlTabId, 
+                addSqlTab, 
+                removeSqlTab, 
+                updateSqlTab,
+                setIsGlobalExecuting
+            }}>
                 <ErDiagramContext.Provider value={diagramValue}>
                     {children}
                 </ErDiagramContext.Provider>

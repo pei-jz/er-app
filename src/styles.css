@@ -59,3 +59,39 @@ body {
 .custom-scrollbar-horizontal::-webkit-scrollbar-thumb:hover {
     background-color: #525252;
 }
+
+@keyframes progress {
+    0% { transform: scaleX(0); }
+    50% { transform: scaleX(0.7); }
+    100% { transform: scaleX(1); }
+}
+
+.animate-progress {
+    animation: progress 2s infinite linear;
+    transform-origin: left;
+}
+
+/* ER Flow Handle Toggle Visibility on Ctrl */
+.er-ctrl-pressed .react-flow__handle {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    width: 12px !important;
+    height: 12px !important;
+    border: 2px solid white !important;
+    box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.er-ctrl-pressed .react-flow__handle.source {
+    background: #3b82f6 !important; /* Blue for Source */
+}
+
+.er-ctrl-pressed .react-flow__handle.target {
+    background: #10b981 !important; /* Green for Target */
+}
+
+.er-ctrl-pressed .react-flow__handle:hover {
+    transform: scale(1.5);
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.8), 0 0 5px white;
+    z-index: 1000 !important;
+}
