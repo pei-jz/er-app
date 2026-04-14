@@ -43,7 +43,6 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
     }, [dbConfig?.host, dbConfig?.db_name, dbConfig?.user, updateSqlTab]);
 
     const [isLoading, setIsLoading] = useState(false);
-    const isLocalExecuting = isLoading; // For backward compatibility or internal use
     const [cachedColumns] = useState<Record<string, string[]>>({});
 
     // Auto-complete state
