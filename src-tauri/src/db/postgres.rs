@@ -25,10 +25,6 @@ impl DatabaseManager for PostgresManager {
 
         let mut tables_map: HashMap<String, (Vec<ColumnMetadata>, Option<String>)> = HashMap::new();
         for (t_name, c_name, d_type, _is_null, t_comment, c_comment) in rows {
-            let mut extra = HashMap::new();
-            if let Some(comment) = c_comment {
-                 extra.insert("comment".to_string(), serde_json::Value::String(comment));
-            }
             let entry = tables_map.entry(t_name.clone()).or_insert_with(|| (Vec::new(), t_comment));
             entry.0.push(ColumnMetadata {
                 name: c_name,
@@ -37,16 +33,13 @@ impl DatabaseManager for PostgresManager {
                 is_foreign_key: false,
                 references_table: None,
                 references_column: None,
-                extra,
+                comment: c_comment,
+                extra: HashMap::new(),
             });
         }
 
         Ok(tables_map.into_iter().map(|(name, (columns, t_comment))| {
-            let mut extra = HashMap::new();
-            if let Some(comment) = t_comment {
-                extra.insert("comment".to_string(), serde_json::Value::String(comment));
-            }
-            TableMetadata { name, columns, indices: Vec::new(), category_id: None, x: 0.0, y: 0.0, extra }
+            TableMetadata { name, comment: t_comment, columns, indices: Vec::new(), category_id: None, x: 0.0, y: 0.0, extra: HashMap::new() }
         }).collect())
     }
 
@@ -63,11 +56,17 @@ impl DatabaseManager for PostgresManager {
             let data_type: String = row.get("data_type");
             table_comment = row.get("table_comment");
             let c_comment: Option<String> = row.get("column_comment");
-            let mut extra = HashMap::new();
-            if let Some(comment) = c_comment {
-                 extra.insert("comment".to_string(), serde_json::Value::String(comment));
-            }
-            columns.push(ColumnMetadata { name, data_type, is_primary_key: false, is_foreign_key: false, references_table: None, references_column: None, extra });
+            
+            columns.push(ColumnMetadata { 
+                name, 
+                data_type, 
+                is_primary_key: false, 
+                is_foreign_key: false, 
+                references_table: None, 
+                references_column: None, 
+                comment: c_comment,
+                extra: HashMap::new() 
+            });
         }
 
         let con_rows = match &self.source {
@@ -117,11 +116,16 @@ impl DatabaseManager for PostgresManager {
             indices.push(IndexMetadata { name: i_name, columns: cols, is_unique, r#type: Some("INDEX".to_string()), comment: None, extra: HashMap::new() });
         }
 
-        Ok(TableMetadata { name: table_name.to_string(), columns, indices, category_id: None, x: 0.0, y: 0.0, extra: {
-            let mut e = HashMap::new();
-            if let Some(c) = table_comment { e.insert("comment".to_string(), serde_json::Value::String(c)); }
-            e
-        }})
+        Ok(TableMetadata { 
+            name: table_name.to_string(), 
+            comment: table_comment,
+            columns, 
+            indices, 
+            category_id: None, 
+            x: 0.0, 
+            y: 0.0, 
+            extra: HashMap::new()
+        })
     }
 
     async fn fetch_catalog(&self) -> Result<Vec<DbObject>, String> {
@@ -129,7 +133,11 @@ impl DatabaseManager for PostgresManager {
             PostgresSource::Pool(p) => sqlx::query(POSTGRES_CATALOG_SQL).fetch_all(p).await,
             PostgresSource::Connection(c) => sqlx::query(POSTGRES_CATALOG_SQL).fetch_all(&mut *c.lock().await).await,
         }.map_err(|e| e.to_string())?;
-        Ok(rows.iter().map(|row| DbObject { name: row.get(0), object_type: row.get(1) }).collect())
+        Ok(rows.iter().map(|row| DbObject { 
+            name: row.get(0), 
+            object_type: row.get(1),
+            comment: row.get(2)
+        }).collect())
     }
 
     async fn execute_query(&self, sql: String, offset: i64, is_select: bool) -> Result<QueryResult, String> {
@@ -157,7 +165,7 @@ impl DatabaseManager for PostgresManager {
                     result_rows.push(values);
                 }
             }
-            Ok(QueryResult { columns, rows: result_rows, has_more: total > offset + 500, total_count: Some(total), has_uncommitted_changes: false })
+            Ok(QueryResult { columns, rows: result_rows, has_more: total > offset + 500, total_count: Some(total), has_uncommitted_changes: false, errors: None })
         } else {
             let mut total_affected = 0;
             let statements: Vec<&str> = sql.split(';').filter(|s| !s.trim().is_empty()).collect();
@@ -176,7 +184,7 @@ impl DatabaseManager for PostgresManager {
                 };
                 total_affected += res.rows_affected();
             }
-            Ok(QueryResult { columns: vec![], rows: vec![], has_more: false, total_count: Some(total_affected as i64), has_uncommitted_changes: true })
+            Ok(QueryResult { columns: vec![], rows: vec![], has_more: false, total_count: Some(total_affected as i64), has_uncommitted_changes: true, errors: None })
         }
     }
 
@@ -225,7 +233,7 @@ const POSTGRES_METADATA_SQL: &str = "SELECT c.table_name, c.column_name, c.data_
 const POSTGRES_COLUMNS_SQL: &str = "SELECT c.column_name, c.data_type, c.is_nullable, obj_description(t.oid) as table_comment, col_description(t.oid, a.attnum) as column_comment FROM information_schema.columns c JOIN pg_class t ON c.table_name = t.relname JOIN pg_namespace n ON t.relnamespace = n.oid AND c.table_schema = n.nspname JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = c.column_name WHERE c.table_schema = 'public' AND c.table_name = $1 ORDER BY c.ordinal_position";
 const POSTGRES_CONSTRAINTS_SQL: &str = "SELECT conname as constraint_name, contype::text as constraint_type, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = conrelid AND attnum = ANY(conkey) ORDER BY array_position(conkey, attnum)) as column_names, confrelid::regclass::text as ref_table, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = confrelid AND attnum = ANY(confkey) ORDER BY array_position(confkey, attnum)) as ref_columns FROM pg_constraint WHERE conrelid = $1::regclass";
 const POSTGRES_INDEXES_SQL: &str = "SELECT i.relname as index_name, ARRAY(SELECT attname FROM pg_attribute WHERE attrelid = t.oid AND attnum = ANY(ix.indkey) ORDER BY array_position(ix.indkey, attnum)) as column_names, ix.indisunique as is_unique FROM pg_class t, pg_class i, pg_index ix WHERE t.oid = ix.indrelid AND i.oid = ix.indexrelid AND t.relkind = 'r' AND t.relname = $1 AND ix.indisprimary = false";
-const POSTGRES_CATALOG_SQL: &str = "SELECT tablename as name, 'TABLE' as type FROM pg_tables WHERE schemaname = current_schema() UNION ALL SELECT viewname as name, 'VIEW' as type FROM pg_views WHERE schemaname = current_schema() UNION ALL SELECT p.proname as name, 'FUNCTION' as type FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = current_schema()";
+const POSTGRES_CATALOG_SQL: &str = "SELECT tablename as name, 'TABLE' as type, obj_description(c.oid) as comment FROM pg_tables t JOIN pg_class c ON t.tablename = c.relname JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = t.schemaname WHERE t.schemaname = current_schema() UNION ALL SELECT viewname as name, 'VIEW' as type, obj_description(c.oid) as comment FROM pg_views v JOIN pg_class c ON v.viewname = c.relname JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = v.schemaname WHERE v.schemaname = current_schema() UNION ALL SELECT p.proname as name, 'FUNCTION' as type, obj_description(p.oid) as comment FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = current_schema()";
 
 fn row_value_to_string(row: &sqlx::postgres::PgRow, i: usize) -> String {
     if let Ok(v) = row.try_get::<String, _>(i) { return v; }

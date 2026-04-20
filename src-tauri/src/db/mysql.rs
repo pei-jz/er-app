@@ -32,13 +32,21 @@ impl DatabaseManager for MySqlManager {
                 is_foreign_key: ref_t.is_some(),
                 references_table: ref_t,
                 references_column: ref_c,
+                comment: None,
                 extra: HashMap::new(),
             });
         }
 
-        Ok(tables_map.into_iter().map(|(name, columns)| TableMetadata { 
-            name, columns, indices: Vec::new(), category_id: None, x: 0.0, y: 0.0, extra: HashMap::new()
-        }).collect())
+        Ok(tables_map.into_iter().map(|(name, columns)| TableMetadata {
+        name,
+        comment: None,
+        columns,
+        indices: Vec::new(),
+        category_id: None,
+        x: 0.0,
+        y: 0.0,
+        extra: HashMap::new(),
+    }).collect())
     }
 
     async fn fetch_table_columns(&self, db_name: &str, table_name: &str) -> Result<TableMetadata, String> {
@@ -49,12 +57,7 @@ impl DatabaseManager for MySqlManager {
 
         let mut columns = Vec::new();
         for (_t_name, c_name, d_type, c_key, ref_t, ref_c, c_comment) in rows {
-            let mut extra = HashMap::new();
-            if let Some(comment) = c_comment {
-                if !comment.is_empty() {
-                    extra.insert("comment".to_string(), serde_json::Value::String(comment));
-                }
-            }
+            let extra = HashMap::new();
             columns.push(ColumnMetadata {
                 name: c_name,
                 data_type: d_type,
@@ -62,6 +65,7 @@ impl DatabaseManager for MySqlManager {
                 is_foreign_key: ref_t.is_some(),
                 references_table: ref_t,
                 references_column: ref_c,
+                comment: c_comment,
                 extra,
             });
         }
@@ -84,8 +88,13 @@ impl DatabaseManager for MySqlManager {
             entry.columns.push(c_name);
         }
 
+        let tab_comment: Option<String> = match &self.source {
+            MySqlSource::Pool(p) => sqlx::query_scalar("SELECT table_comment FROM information_schema.tables WHERE table_schema = ? AND table_name = ?").bind(db_name).bind(table_name).fetch_optional(p).await,
+            MySqlSource::Connection(c) => sqlx::query_scalar("SELECT table_comment FROM information_schema.tables WHERE table_schema = ? AND table_name = ?").bind(db_name).bind(table_name).fetch_optional(&mut *c.lock().await).await,
+        }.unwrap_or(None);
+
         Ok(TableMetadata { 
-            name: table_name.to_string(), columns, indices: indices_map.into_values().collect(), category_id: None, x: 0.0, y: 0.0, extra: HashMap::new()
+            name: table_name.to_string(), comment: tab_comment, columns, indices: indices_map.into_values().collect(), category_id: None, x: 0.0, y: 0.0, extra: HashMap::new()
         })
     }
 
@@ -100,8 +109,9 @@ impl DatabaseManager for MySqlManager {
         for row in rows1 {
             let name: String = row.try_get(0).unwrap_or_default();
             let table_type: String = row.try_get(1).unwrap_or_default();
+            let comment: Option<String> = row.try_get(2).ok();
             let type_mapped = if table_type.contains("VIEW") { "VIEW".to_string() } else { "TABLE".to_string() };
-            results.push(DbObject { name, object_type: type_mapped });
+            results.push(DbObject { name, object_type: type_mapped, comment });
         }
 
         let rows2 = match &self.source {
@@ -112,7 +122,8 @@ impl DatabaseManager for MySqlManager {
         for row in rows2 {
             let name: String = row.try_get(0).unwrap_or_default();
             let r_type: String = row.try_get(1).unwrap_or_default();
-            results.push(DbObject { name, object_type: r_type.to_uppercase() });
+            let comment: Option<String> = row.try_get(2).ok();
+            results.push(DbObject { name, object_type: r_type.to_uppercase(), comment });
         }
 
         Ok(results)
@@ -156,6 +167,7 @@ impl DatabaseManager for MySqlManager {
                 has_more: total > offset + 500,
                 total_count: Some(total),
                 has_uncommitted_changes: false,
+                errors: None,
             })
         } else {
             let mut total_affected = 0;
@@ -172,7 +184,8 @@ impl DatabaseManager for MySqlManager {
                 rows: vec![], 
                 has_more: false, 
                 total_count: Some(total_affected as i64), 
-                has_uncommitted_changes: true 
+                has_uncommitted_changes: true,
+                errors: None
             })
         }
     }
@@ -231,8 +244,8 @@ impl DatabaseManager for MySqlManager {
 const MYSQL_METADATA_SQL: &str = "SELECT CAST(c.table_name AS CHAR), CAST(c.column_name AS CHAR), CAST(c.data_type AS CHAR), CAST(c.column_key AS CHAR), CAST(k.referenced_table_name AS CHAR), CAST(k.referenced_column_name AS CHAR) FROM information_schema.columns c LEFT JOIN information_schema.key_column_usage k ON c.table_name = k.table_name AND c.column_name = k.column_name AND k.table_schema = c.table_schema WHERE c.table_schema = ?";
 const MYSQL_COLUMNS_SQL: &str = "SELECT CAST(c.table_name AS CHAR), CAST(c.column_name AS CHAR), CAST(c.data_type AS CHAR), CAST(c.column_key AS CHAR), CAST(k.referenced_table_name AS CHAR), CAST(k.referenced_column_name AS CHAR), CAST(c.column_comment AS CHAR) FROM information_schema.columns c LEFT JOIN information_schema.key_column_usage k ON c.table_name = k.table_name AND c.column_name = k.column_name AND k.table_schema = c.table_schema WHERE c.table_schema = ? AND c.table_name = ?";
 const MYSQL_INDEXES_SQL: &str = "SELECT CAST(INDEX_NAME AS CHAR), CAST(COLUMN_NAME AS CHAR), NON_UNIQUE, CAST(INDEX_TYPE AS CHAR), CAST(INDEX_COMMENT AS CHAR) FROM information_schema.statistics WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX";
-const MYSQL_CATALOG_TABLES_SQL: &str = "SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE()";
-const MYSQL_CATALOG_ROUTINES_SQL: &str = "SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.routines WHERE ROUTINE_SCHEMA = DATABASE()";
+const MYSQL_CATALOG_TABLES_SQL: &str = "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT FROM information_schema.tables WHERE TABLE_SCHEMA = DATABASE()";
+const MYSQL_CATALOG_ROUTINES_SQL: &str = "SELECT ROUTINE_NAME, ROUTINE_TYPE, ROUTINE_COMMENT FROM information_schema.routines WHERE ROUTINE_SCHEMA = DATABASE()";
 
 fn row_value_to_string(row: &sqlx::mysql::MySqlRow, i: usize) -> String {
     if let Ok(v) = row.try_get::<String, _>(i) { return v; }

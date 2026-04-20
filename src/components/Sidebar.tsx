@@ -46,6 +46,19 @@ const Sidebar: React.FC<SidebarProps> = ({
     const [propertiesTab, setPropertiesTab] = React.useState<'columns' | 'indices'>('columns');
     const [propertiesSearch, setPropertiesSearch] = React.useState('');
 
+    // Fix: Reset selection when catalog changes
+    React.useEffect(() => {
+        if (selectedTable && catalog.length > 0) {
+            const exists = catalog.some(obj => obj.name === selectedTable);
+            if (!exists) {
+                setSelectedTable(null);
+                setTableDetails({});
+            }
+        } else if (catalog.length === 0) {
+            setSelectedTable(null);
+            setTableDetails({});
+        }
+    }, [catalog]);
     const toggleTable = async (tableName: string) => {
         if (selectedTable === tableName) {
             setSelectedTable(null);
@@ -330,7 +343,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 </h2>
                                 {onRefreshDb && (
                                     <button 
-                                        onClick={onRefreshDb}
+                                        onClick={() => {
+                                            setSelectedTable(null);
+                                            setTableDetails({});
+                                            onRefreshDb();
+                                        }}
                                         className="text-neutral-500 hover:text-blue-400 p-0.5 rounded transition-colors bg-neutral-800 border border-neutral-700/50"
                                         title="Refresh Schema"
                                     >
@@ -360,12 +377,15 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 <div className="py-10 text-center opacity-30 italic text-[10px]">No objects found</div>
                             ) : (
                                 catalog
-                                    .filter(obj => obj.name.toLowerCase().includes(searchTerm.toLowerCase()))
+                                    .filter(obj => 
+                                        obj.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                                        ((obj as any).comment && (obj as any).comment.toLowerCase().includes(searchTerm.toLowerCase()))
+                                    )
                                     .sort((a, b) => a.name.localeCompare(b.name))
                                     .map(obj => (
                                         <div
                                             key={obj.name}
-                                            className={`group flex items-center justify-between px-2 py-1.5 rounded-lg transition-colors text-xs cursor-pointer select-none ${selectedTable === obj.name ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-bold' : 'text-neutral-400 hover:text-neutral-100 hover:bg-neutral-700/50'}`}
+                                            className={`group flex flex-col px-2 py-1.5 rounded-lg transition-colors text-xs cursor-pointer select-none border border-transparent ${selectedTable === obj.name ? 'bg-blue-600/20 text-blue-400 border-blue-500/30 font-bold' : 'text-neutral-400 hover:text-neutral-100 hover:bg-neutral-700/50'}`}
                                             onClick={() => toggleTable(obj.name)}
                                             onDoubleClick={() => handleInsertSql(obj.name)}
                                             onContextMenu={(e) => {
@@ -378,11 +398,18 @@ const Sidebar: React.FC<SidebarProps> = ({
                                                 });
                                             }}
                                         >
-                                            <div className="flex items-center gap-2 truncate">
-                                                {obj.object_type === 'TABLE' ? <Table size={12} className={`${selectedTable === obj.name ? 'text-blue-400' : 'text-blue-500'} shrink-0`} /> : <Layers size={12} className={`${selectedTable === obj.name ? 'text-indigo-400' : 'text-indigo-500'} shrink-0`} />}
-                                                <span className="truncate" title={obj.name}>{obj.name}</span>
+                                            <div className="flex items-center justify-between">
+                                                <div className="flex items-center gap-2 truncate">
+                                                    {obj.object_type === 'TABLE' ? <Table size={12} className={`${selectedTable === obj.name ? 'text-blue-400' : 'text-blue-500'} shrink-0`} /> : <Layers size={12} className={`${selectedTable === obj.name ? 'text-indigo-400' : 'text-indigo-500'} shrink-0`} />}
+                                                    <span className="truncate" title={obj.name}>{obj.name}</span>
+                                                </div>
+                                                <span className="text-[8px] font-black text-neutral-600 group-hover:text-neutral-500 transition-colors uppercase pr-1 shrink-0">{obj.object_type.slice(0, 3)}</span>
                                             </div>
-                                            <span className="text-[8px] font-black text-neutral-600 group-hover:text-neutral-500 transition-colors uppercase pr-1 shrink-0">{obj.object_type.slice(0, 3)}</span>
+                                            {(obj as any).comment && (
+                                                <div className={`text-[9px] ml-5 truncate opacity-60 ${selectedTable === obj.name ? 'text-blue-300' : 'text-neutral-500'}`}>
+                                                    {(obj as any).comment}
+                                                </div>
+                                            )}
                                         </div>
                                     ))
                             )}
@@ -430,6 +457,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                                                     <thead>
                                                         <tr className="text-neutral-500 uppercase tracking-widest border-b border-neutral-700/50">
                                                             <th className="font-semibold p-1 pb-2">Name</th>
+                                                            <th className="font-semibold p-1 pb-2">Comment</th>
                                                             <th className="font-semibold p-1 pb-2">Type</th>
                                                             <th className="font-semibold p-1 pb-2">Req</th>
                                                             <th className="font-semibold p-1 pb-2">PK</th>
@@ -437,7 +465,10 @@ const Sidebar: React.FC<SidebarProps> = ({
                                                     </thead>
                                                     <tbody>
                                                         {tableDetails[selectedTable].columns
-                                                            .filter(c => c.name.toLowerCase().includes(propertiesSearch.toLowerCase()))
+                                                            .filter(c => 
+                                                                c.name.toLowerCase().includes(propertiesSearch.toLowerCase()) ||
+                                                                (c.comment && c.comment.toLowerCase().includes(propertiesSearch.toLowerCase()))
+                                                            )
                                                             .map(c => (
                                                             <tr 
                                                                 key={c.name} 
@@ -455,6 +486,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                                                                 }}
                                                             >
                                                                 <td className="p-1 font-mono text-neutral-300">{c.name}</td>
+                                                                <td className="p-1 text-neutral-500 italic max-w-[100px] truncate" title={c.comment}>{c.comment || '-'}</td>
                                                                 <td className="p-1 text-emerald-400 truncate max-w-[80px]" title={c.data_type}>{c.data_type}</td>
                                                                 <td className="p-1">
                                                                     {!c.is_nullable ? <span className="text-orange-400 font-bold">Yes</span> : <span className="text-neutral-600">No</span>}
@@ -589,7 +621,11 @@ const Sidebar: React.FC<SidebarProps> = ({
                         </button>
                         {appMode === 'db' && (
                             <button
-                                onClick={onRefreshDb}
+                                onClick={() => {
+                                    setSelectedTable(null);
+                                    setTableDetails({});
+                                    if (onRefreshDb) onRefreshDb();
+                                }}
                                 className="w-full flex items-center gap-3 px-3 py-2 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-xl transition-all border border-blue-500/30"
                             >
                                 <RefreshCw size={14} className="text-blue-400" />

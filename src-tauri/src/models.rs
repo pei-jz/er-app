@@ -17,6 +17,7 @@ pub struct IndexMetadata {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TableMetadata {
     pub name: String,
+    pub comment: Option<String>,
     pub columns: Vec<ColumnMetadata>,
     pub indices: Vec<IndexMetadata>,
     pub category_id: Option<String>,
@@ -30,6 +31,7 @@ pub struct TableMetadata {
 pub struct DbObject {
     pub name: String,
     pub object_type: String,
+    pub comment: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -40,6 +42,7 @@ pub struct ColumnMetadata {
     pub is_foreign_key: bool,
     pub references_table: Option<String>,
     pub references_column: Option<String>,
+    pub comment: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -90,6 +93,7 @@ pub struct QueryResult {
     pub has_more: bool,
     pub total_count: Option<i64>,
     pub has_uncommitted_changes: bool,
+    pub errors: Option<Vec<String>>,
 }
 
 #[derive(Clone)]

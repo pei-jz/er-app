@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Database, Play, ChevronLeft, ChevronRight, AlertCircle, Terminal, ArrowRightLeft } from 'lucide-react';
+import { Database, Play, ChevronLeft, ChevronRight, AlertCircle, Terminal, ArrowRightLeft, Table, Columns } from 'lucide-react';
 import { invoke } from "@tauri-apps/api/core";
 import { format } from "sql-formatter";
 import { ErDiagramData, DbConfig } from '../types/er';
@@ -16,6 +16,8 @@ interface SqlEditorProps {
     onConnectionStatusChange: (status: 'connected' | 'error' | 'disconnected') => void;
     catalog?: DbObject[];
 }
+
+const KEYWORDS = ['select', 'from', 'where', 'insert', 'into', 'values', 'update', 'set', 'delete', 'join', 'inner', 'left', 'right', 'outer', 'on', 'group by', 'order by', 'having', 'limit', 'offset', 'as', 'and', 'or', 'not', 'in', 'is', 'null', 'commit', 'rollback', 'create', 'drop', 'alter', 'truncate', 'describe', 'show', 'explain'];
 
 export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOpen, dbConnectionStatus, onConnectionStatusChange, catalog = [] }: SqlEditorProps) {
     const {
@@ -43,10 +45,11 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
     }, [dbConfig?.host, dbConfig?.db_name, dbConfig?.user, updateSqlTab]);
 
     const [isLoading, setIsLoading] = useState(false);
-    const [cachedColumns] = useState<Record<string, string[]>>({});
+    const [cachedColumnsMetadata, setCachedColumnsMetadata] = useState<Record<string, ColumnMetadata[]>>({});
+    const pendingFetches = useRef<Set<string>>(new Set());
 
     // Auto-complete state
-    const [suggestions, setSuggestions] = useState<{ type: 'table' | 'column' | 'join', items: string[], replacePrefix: string } | null>(null);
+    const [suggestions, setSuggestions] = useState<{ type: 'table' | 'column' | 'join', items: { label: string, value: string, comment?: string, type: string }[], replacePrefix: string } | null>(null);
     const [selectedIndex, setSelectedIndex] = useState(0);
     const [cursorIdx, setCursorIdx] = useState(0);
     const [editorHeightPercent, setEditorHeightPercent] = useState(50);
@@ -377,7 +380,7 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
         window.addEventListener('keydown', handleCopy);
         return () => {
             document.removeEventListener('mousedown', handleResultsMouseDown);
-            window.removeEventListener('keydown', handleCopy);
+            window.addEventListener('keydown', handleCopy);
         };
     }, [isDragging, selectionBox, results]);
 
@@ -385,27 +388,65 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
         if (!results) return;
         if (!contextMenu && !selectionBox) return;
 
-        const quoteIfNeeded = (v: string) => isNaN(Number(v)) && v !== 'NULL' ? `'${v.replace(/'/g, "''")}'` : v;
+        const formatDateTimeString = (val: string, formatTemplate: string) => {
+            if (!formatTemplate) return val;
+            const match = val.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:Z|([+-]\d{2}:\d{2}))?)?$/);
+            if (!match) return val;
+            
+            const [_, YYYY, MM, DD, HH, mm, ss, frac] = match;
+            const hours = HH || '00';
+            const minutes = mm || '00';
+            const seconds = ss || '00';
+            const fractional = frac || '000';
+            const SSS = fractional.substring(0, 3).padEnd(3, '0');
+            
+            return formatTemplate
+                .replace(/YYYY/g, YYYY)
+                .replace(/MM/g, MM)
+                .replace(/DD/g, DD)
+                .replace(/HH24/gi, hours)
+                .replace(/HH/g, hours)
+                .replace(/MI/gi, minutes)
+                .replace(/mm/g, minutes)
+                .replace(/SS/g, seconds)
+                .replace(/FF/gi, fractional)
+                .replace(/SSS/g, SSS);
+        };
+
+        const quoteIfNeeded = (val: string) => {
+            const v = String(val);
+            if (!isNaN(Number(v)) && v.trim() !== '') return v;
+            if (v === 'NULL') return v;
+            
+            let formattedValue = v;
+            if (data.settings?.exportDateTimeFormat && /^\d{4}-\d{2}-\d{2}/.test(v)) {
+                formattedValue = formatDateTimeString(v, data.settings.exportDateTimeFormat);
+            }
+            
+            return `'${formattedValue.replace(/'/g, "''")}'`;
+        };
 
         const hasSelection = selectionBox !== null;
         let rMin = contextMenu ? (contextMenu.rowIdx ?? 0) : (selectionBox ? Math.min(selectionBox.r1, selectionBox.r2) : 0);
         let rMax = contextMenu ? (contextMenu.rowIdx ?? 0) : (selectionBox ? Math.max(selectionBox.r1, selectionBox.r2) : 0);
         let cMin = contextMenu ? (contextMenu.colIdx ?? 0) : (selectionBox ? Math.min(selectionBox.c1, selectionBox.c2) : 0);
         let cMax = contextMenu ? (contextMenu.colIdx ?? 0) : (selectionBox ? Math.max(selectionBox.c1, selectionBox.c2) : 0);
-
-        if (hasSelection && selectionBox && contextMenu) {
-            // If we have both, use selectionBox if it contains the contextMenu point, otherwise just contextMenu?
-            // Usually context menu actions should prioritize selection if it's there.
-            rMin = Math.min(selectionBox.r1, selectionBox.r2);
-            rMax = Math.max(selectionBox.r1, selectionBox.r2);
-            cMin = Math.min(selectionBox.c1, selectionBox.c2);
-            cMax = Math.max(selectionBox.c1, selectionBox.c2);
-        } else if (hasSelection && selectionBox) {
+        if (hasSelection && selectionBox) {
             rMin = Math.min(selectionBox.r1, selectionBox.r2);
             rMax = Math.max(selectionBox.r1, selectionBox.r2);
             cMin = Math.min(selectionBox.c1, selectionBox.c2);
             cMax = Math.max(selectionBox.c1, selectionBox.c2);
         }
+
+        const extractTableName = (query: string) => {
+            if (!query) return 'unknown_table';
+            const regex = /(?:from|into|update|delete\s+from)\s+((?:"[^"]+"|[a-z0-9_]+)(?:\.(?:"[^"]+"|[a-z0-9_]+))?)/i;
+            const m = query.match(regex);
+            return m ? m[1] : 'unknown_table';
+        };
+
+        const targetSql = activeTab.lastExecutedSql || sql;
+        const tableName = extractTableName(targetSql);
 
         switch (action) {
             case 'copy':
@@ -439,8 +480,6 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                 }
                 break;
             case 'insert': {
-                const tableNameMatch = sql.match(/(?:from|into|update)\s+([a-zA-Z0-9_".]+)/i);
-                const tableName = tableNameMatch ? tableNameMatch[1] : 'unknown_table';
                 let insertStatements = "";
                 for (let r = rMin; r <= rMax; r++) {
                     const rowData = results.rows[r];
@@ -449,12 +488,10 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                     insertStatements += `INSERT INTO ${tableName} (${cols}) VALUES (${vals});\n`;
                 }
 
-                addSqlTab(`Insert ${tableName}`, insertStatements);
+                addSqlTab(`Insert ${tableName.replace(/"/g, '')}`, insertStatements);
                 break;
             }
             case 'update': {
-                const tableNameMatch = sql.match(/(?:from|into|update)\s+([a-zA-Z0-9_".]+)/i);
-                const tableName = tableNameMatch ? tableNameMatch[1] : 'unknown_table';
                 let updateStatements = "";
 
                 for (let r = rMin; r <= rMax; r++) {
@@ -467,7 +504,7 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                     updateStatements += `UPDATE ${tableName} SET ${setClauses.join(', ')} WHERE /* specify condition */;\n`;
                 }
 
-                addSqlTab(`Update ${tableName}`, updateStatements);
+                addSqlTab(`Update ${tableName.replace(/"/g, '')}`, updateStatements);
                 break;
             }
         }
@@ -499,18 +536,24 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                 tabId: activeTabId
             });
             const durationMs = Date.now() - startTime;
+            const hasErrors = res.errors && res.errors.length > 0;
+            const errorStr = hasErrors ? res.errors.join('\n') : undefined;
+
             const newLog: SqlLogEntry = {
                 time: new Date().toLocaleTimeString(),
                 sql: executeQuery,
                 durationMs,
-                rowsAffected: res.total_count !== null ? Number(res.total_count) : undefined
+                rowsAffected: res.total_count !== null ? Number(res.total_count) : undefined,
+                error: errorStr
             };
 
             updateActiveTab({
                 results: res,
                 offset: newOffset,
                 logs: [newLog, ...(activeTab.logs || [])],
-                activeBottomTab: 'results'
+                activeBottomTab: hasErrors ? 'logs' : 'results',
+                lastExecutedSql: executeQuery,
+                error: hasErrors ? "Some statements failed. Check logs for details." : null
             });
             const newWidths: Record<string, number> = {};
             res.columns.forEach(c => newWidths[c] = 150);
@@ -596,29 +639,44 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
         const pos = e.target.selectionStart;
         updateActiveTab({ sql: value });
         setCursorIdx(pos);
-        setSuggestions(null); // Hide suggestions on type unless user hits Ctrl+Space
+        
+        // Fix: Auto-trigger suggestions for @, . and JOIN
+        const charBefore = value[pos - 1];
+        const textBefore = value.substring(0, pos);
+        
+        if (charBefore === '@' || charBefore === '.' || charBefore === '．') {
+            updateSuggestions(value, pos);
+        } else if (textBefore.toLowerCase().match(/(?:^|\s)join\s+$/)) {
+            updateSuggestions(value, pos);
+        } else if (suggestions) {
+            // Keep updating suggestions as user types to filter the list
+            updateSuggestions(value, pos);
+        } else {
+            setSuggestions(null);
+        }
     };
 
     const triggerSuggestions = (pos?: number) => {
         const currentPos = pos ?? cursorIdx;
-        updateSuggestions(sql, currentPos);
+        updateSuggestions(activeTab.sql, currentPos);
     };
 
     const updateSuggestions = (currentSql: string, pos: number) => {
-        
-        // Identify current SQL block (delimited by ;)
-        const blocks = currentSql.split(';');
-        let currentBlock = '';
-        let blockOffset = 0;
-        for (const b of blocks) {
-            const end = blockOffset + b.length;
-            if (pos >= blockOffset && pos <= end + 1) {
-                currentBlock = b;
-                break;
-            }
-            blockOffset = end + 1;
+        interface SuggestionItem {
+            label: string;
+            comment?: string;
+            value: string;
+            type: 'table' | 'column' | 'keyword' | 'join';
         }
 
+        const lowerSql = currentSql.toLowerCase();
+        
+        // Identify current SQL block (delimited by ;) - Optimized for large SQL
+        const lastSemicolon = currentSql.lastIndexOf(';', pos - 1);
+        const nextSemicolon = currentSql.indexOf(';', pos);
+        const blockOffset = lastSemicolon === -1 ? 0 : lastSemicolon + 1;
+        const currentBlock = currentSql.substring(blockOffset, nextSemicolon === -1 ? currentSql.length : nextSemicolon);
+        
         const textBeforeInBlock = currentSql.substring(blockOffset, pos);
 
         // 1. Check for JOIN trigger first
@@ -628,7 +686,7 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
             const mentioned = data.tables.filter(t => currentBlock.includes(t.name));
 
             if (mentioned.length > 0) {
-                let joinItems: string[] = [];
+                let joinItems: SuggestionItem[] = [];
                 data.tables.forEach(t2 => {
                     if (typedTarget && !t2.name.toLowerCase().includes(typedTarget)) return;
 
@@ -662,17 +720,18 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                         // t1 has FK to t2
                         const fk1 = t1.columns.find(c => c.references_table === t2.name);
                         if (fk1) {
-                            joinItems.push(`${t2Display} on ${alias1}.${fk1.name} = ${alias2}.${fk1.references_column}`);
+                            const val = `${t2Display} on ${alias1}.${fk1.name} = ${alias2}.${fk1.references_column}`;
+                            joinItems.push({ label: val, value: val, type: 'join' });
                         }
                         // t2 has FK to t1
                         const fk2 = t2.columns.find(c => c.references_table === t1.name);
                         if (fk2) {
-                            joinItems.push(`${t2Display} on ${alias2}.${fk2.name} = ${alias1}.${fk2.references_column}`);
+                            const val = `${t2Display} on ${alias2}.${fk2.name} = ${alias1}.${fk2.references_column}`;
+                            joinItems.push({ label: val, value: val, type: 'join' });
                         }
                     });
                 });
 
-                joinItems = Array.from(new Set(joinItems));
                 if (joinItems.length > 0) {
                     setSuggestions({ type: 'join', items: joinItems, replacePrefix: joinMatch[1] });
                     return;
@@ -681,23 +740,33 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
         }
 
         // 2. Normal table/column autocomplete
-        const match = textBeforeInBlock.match(/(?:^|\s|,|\()([a-zA-Z0-9_@.]*)$/);
+        const match = textBeforeInBlock.match(/(?:^|\s|,|\()([a-zA-Z0-9_@.．]*)$/);
         if (match) {
-            const typed = match[1].toLowerCase();
-            
-            // Keywords
-            const keywords = ['SELECT', 'FROM', 'WHERE', 'INSERT', 'INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET', 'AS', 'AND', 'OR', 'NOT', 'IN', 'IS', 'NULL', 'COMMIT', 'ROLLBACK', 'CREATE', 'DROP', 'ALTER', 'TRUNCATE', 'DESCRIBE', 'SHOW', 'EXPLAIN'];
+            let typed = match[1].toLowerCase();
+            typed = typed.replace(/．/g, '.'); // Normalize full-width dot
             
             if (typed.startsWith('@')) {
                 const tableMatch = typed.substring(1);
-                // Combine ER tables and Database catalog
-                const erTableNames = data.tables.map(t => t.name);
-                const dbObjectNames = catalog.map(o => o.name);
-                const allObjects = Array.from(new Set([...erTableNames, ...dbObjectNames]));
+                
+                const filtered: SuggestionItem[] = [];
+                const seen = new Set<string>();
+                
+                const addUnique = (items: { label: string, comment?: string, value: string }[]) => {
+                    for (const item of items) {
+                        if (seen.size >= 15) break;
+                        const lowerLabel = item.label.toLowerCase();
+                        if (!seen.has(lowerLabel) && (lowerLabel.includes(tableMatch) || (item.comment && item.comment.toLowerCase().includes(tableMatch)))) {
+                            seen.add(lowerLabel);
+                            filtered.push({ ...item, type: 'table' });
+                        }
+                    }
+                };
 
-                const filtered = allObjects
-                    .filter(name => name.toLowerCase().includes(tableMatch))
-                    .slice(0, 15);
+                addUnique(data.tables.map(t => ({ label: t.name, comment: t.comment, value: t.name })));
+                if (filtered.length < 15) {
+                    addUnique(catalog.map(o => ({ label: o.name, comment: (o as any).comment, value: o.name })));
+                }
+
                 setSuggestions({ type: 'table', items: filtered, replacePrefix: '@' + tableMatch });
                 setSelectedIndex(0);
                 return;
@@ -719,9 +788,12 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                 const erTable = data.tables.find(t => t.name.toLowerCase() === realTableName.toLowerCase());
                 if (erTable) {
                     const colMatches = erTable.columns
-                        .map(c => c.name)
-                        .filter(name => name.toLowerCase().startsWith(typedCol.toLowerCase()))
-                        .sort();
+                        .filter(c => 
+                            c.name.toLowerCase().includes(typedCol.toLowerCase()) || 
+                            (c.comment && c.comment.toLowerCase().includes(typedCol.toLowerCase()))
+                        )
+                        .map(c => ({ label: c.name, comment: c.comment, value: c.name, type: 'column' as const }))
+                        .sort((a, b) => a.label.localeCompare(b.label));
                     if (colMatches.length > 0) {
                         setSuggestions({ type: 'column', items: colMatches, replacePrefix: typedCol });
                         return;
@@ -729,20 +801,67 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                 }
 
                 // 2. Try Cached Columns (Live DB)
-                const colMatchesCached = (cachedColumns[realTableName] || [])
-                    .filter((c: string) => c.toLowerCase().startsWith(typedCol.toLowerCase()))
-                    .sort();
+                // We need to store full metadata in cachedColumns, but for now we'll assume it's just names or we update cachedColumns structure.
+                // Let's check if cachedColumns already has objects.
+                const cached = (cachedColumnsMetadata[realTableName.toUpperCase()] || cachedColumnsMetadata[realTableName.toLowerCase()] || []);
                 
-                if (colMatchesCached.length > 0) {
-                    setSuggestions({ type: 'column', items: colMatchesCached, replacePrefix: typedCol });
-                    return;
+                if (cached.length > 0) {
+                    const colMatchesCached = cached
+                        .filter(c => 
+                            c.name.toLowerCase().includes(typedCol.toLowerCase()) || 
+                            (c.comment && c.comment.toLowerCase().includes(typedCol.toLowerCase()))
+                        )
+                        .map(c => ({ label: c.name, comment: c.comment, value: c.name, type: 'column' as const }))
+                        .sort((a, b) => a.label.localeCompare(b.label));
+                    
+                    if (colMatchesCached.length > 0) {
+                        setSuggestions({ type: 'column', items: colMatchesCached, replacePrefix: typedCol });
+                        return;
+                    }
                 }
+
+                // 3. If not in ER and not cached, try to fetch (Live DB)
+                if (!erTable && !cachedColumnsMetadata[realTableName.toUpperCase()] && !cachedColumnsMetadata[realTableName.toLowerCase()] && !pendingFetches.current.has(realTableName)) {
+                    if (dbConfig) {
+                        pendingFetches.current.add(realTableName);
+                        setSuggestions({ 
+                            type: 'column', 
+                            items: [{ label: 'Loading columns...', value: '', type: 'column', comment: `Fetching ${realTableName} columns...` }], 
+                            replacePrefix: typedCol 
+                        });
+                        
+                        invoke<TableMetadata>('fetch_table_columns', {
+                            config: dbConfig,
+                            tableName: realTableName
+                        }).then(result => {
+                            setCachedColumnsMetadata(prev => ({ ...prev, [realTableName.toUpperCase()]: result.columns }));
+                            pendingFetches.current.delete(realTableName);
+                            if (textareaRef.current) {
+                                triggerSuggestions(textareaRef.current.selectionStart);
+                            }
+                        }).catch(e => {
+                            console.error(`Failed to fetch columns for ${realTableName}`, e);
+                            pendingFetches.current.delete(realTableName);
+                            setSuggestions(null);
+                        });
+                        return;
+                    }
+                }
+                
+                // If it's a dot completion, NEVER fall back to keywords
+                setSuggestions(null);
+                return;
             }
             
-            const filteredKeywords = keywords.filter(k => k.toLowerCase().startsWith(typed));
-            if (filteredKeywords.length > 0 && typed.length > 0) {
-                setSuggestions({ type: 'table', items: filteredKeywords, replacePrefix: typed });
-                return;
+            if (!typed.includes('.') && !typed.startsWith('@')) {
+                const filteredKeywords = KEYWORDS
+                    .filter(k => k.startsWith(typed))
+                    .map(k => ({ label: k, value: k, type: 'keyword' as const }));
+                if (filteredKeywords.length > 0 && typed.length > 0) {
+                    setSuggestions({ type: 'table', items: filteredKeywords, replacePrefix: typed });
+                    setSelectedIndex(0);
+                    return;
+                }
             }
         }
         setSuggestions(null);
@@ -762,7 +881,7 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
             }
             if (e.key === 'Enter' || e.key === 'Tab') {
                 e.preventDefault();
-                insertSuggestion(suggestions.items[selectedIndex]);
+                insertSuggestion(suggestions.items[selectedIndex].value);
                 return;
             }
             if (e.key === 'Escape') {
@@ -778,14 +897,17 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
             return;
         }
 
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        if ((e.key === 'Enter' || e.key === 'r') && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
-            handleExecute();
-            return;
-        }
-        if (e.key === 'r' && (e.ctrlKey || e.metaKey)) {
-            e.preventDefault();
-            handleExecute();
+            let executeText = sql;
+            if (textareaRef.current) {
+                const start = textareaRef.current.selectionStart;
+                const end = textareaRef.current.selectionEnd;
+                if (start !== end) {
+                    executeText = sql.substring(start, end);
+                }
+            }
+            handleExecute(0, executeText);
             return;
         }
     };
@@ -1151,19 +1273,28 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
                         {suggestions && suggestions.items.length > 0 && (
                             <div
                                 ref={suggestionsRef}
-                                className="absolute z-50 w-auto min-w-[200px] max-w-sm bg-neutral-800 border border-neutral-700 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-100"
+                                className="absolute z-50 w-auto min-w-[280px] max-w-lg bg-neutral-800 border border-neutral-700 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-100"
                                 style={{ top: suggestionPos.top + 24, left: suggestionPos.left }}
                             >
                                 <div className="max-h-60 overflow-y-auto suggestions-container py-1 custom-scrollbar">
                                     {suggestions.items.map((item, index) => (
                                         <button
-                                            key={item}
-                                            onClick={() => insertSuggestion(item)}
-                                            className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2 last:border-none ${index === selectedIndex ? 'bg-blue-600 text-white' : 'hover:bg-neutral-700'
+                                            key={`${item.value}-${index}`}
+                                            onClick={() => insertSuggestion(item.value)}
+                                            className={`w-full text-left px-3 py-1.5 text-xs transition-colors flex flex-col gap-0.5 last:border-none ${index === selectedIndex ? 'bg-blue-600 text-white' : 'hover:bg-neutral-700'
                                                 }`}
                                         >
-                                            <Database size={12} className="opacity-50 shrink-0" />
-                                            <span className="font-bold break-words whitespace-normal leading-tight">{item}</span>
+                                            <div className="flex items-center gap-2">
+                                                {item.type === 'table' && <Database size={12} className="opacity-50 shrink-0" />}
+                                                {item.type === 'column' && <Columns size={12} className="opacity-50 shrink-0" />}
+                                                {item.type === 'keyword' && <Terminal size={12} className="opacity-50 shrink-0" />}
+                                                <span className="font-bold break-words whitespace-normal leading-tight">{item.label}</span>
+                                            </div>
+                                            {item.comment && (
+                                                <div className={`text-[10px] ml-5 truncate opacity-70 ${index === selectedIndex ? 'text-blue-100' : 'text-neutral-400'}`}>
+                                                    {item.comment}
+                                                </div>
+                                            )}
                                         </button>
                                     ))}
                                 </div>

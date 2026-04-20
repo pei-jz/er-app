@@ -117,7 +117,7 @@ const TableNode: React.FC<TableNodeProps> = ({ data }) => {
     }
 
     return (
-        <div className={`bg-neutral-800 border-2 rounded-lg shadow-xl overflow-hidden min-w-[200px] transition-all duration-300 ${isHighlighted ? `${styleByRelation.border} ${styleByRelation.glow} scale-[1.02]` : 'border-neutral-700'
+        <div className={`bg-neutral-800 border-2 rounded-lg shadow-xl overflow-hidden min-w-[200px] transition-all duration-300 select-none ${isHighlighted ? `${styleByRelation.border} ${styleByRelation.glow} scale-[1.02]` : 'border-neutral-700'
             } ${isDimmed ? 'opacity-40' : 'opacity-100'}`}>
             {/* Header - Always show table name */}
             <div className={`px-3 py-2 border-b flex items-center gap-2 ${isHighlighted ? styleByRelation.header : 'bg-neutral-900 border-neutral-700'

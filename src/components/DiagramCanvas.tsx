@@ -787,7 +787,7 @@ const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
                 zoomOnScroll={false}
                 zoomOnPinch={true}
                 panOnDrag={[1, 2]}
-                selectionOnDrag={true}
+                selectionOnDrag={false}
                 selectionMode={SelectionMode.Partial}
                 fitView
                 colorMode="dark"

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useErDiagram } from '../hooks/useErData';
 import { DEFAULT_DATA_TYPES_CONFIG, DataTypeConfig } from '../types/er';
-import { X, Settings, CheckCircle2, Circle, Database, Smartphone, Globe, Trash2, Plus } from 'lucide-react';
+import { X, Settings, CheckCircle2, Circle, Database, Smartphone, Globe, Trash2, Plus, Terminal } from 'lucide-react';
 
 interface SettingsModalProps {
     onClose: () => void;
@@ -59,6 +59,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
             items: [
                 { id: 'highPerformanceMode', label: 'High Performance Mode', description: 'Force simplified rendering for large diagrams' },
                 { id: 'disableAnimations', label: 'Disable Animations', description: 'Reduce CPU usage by disabling transitions' },
+            ]
+        },
+        {
+            title: 'SQL Export',
+            icon: <Terminal size={14} />,
+            items: [
+                { id: 'exportDateTimeFormat', label: 'Date/Time Format', description: 'e.g. YYYY/MM/DD HH24:MI:SS', type: 'text' },
             ]
         }
     ];
@@ -120,19 +127,35 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                                     </div>
                                     <div className="grid grid-cols-1 gap-2">
                                         {section.items.map(item => (
-                                            <button
-                                                key={item.id}
-                                                onClick={() => toggle(item.id)}
-                                                className="flex items-center justify-between px-4 py-3 rounded-xl bg-neutral-800/40 border border-neutral-700/30 hover:bg-neutral-800 transition-all text-left group"
-                                            >
-                                                <div className="flex-1">
-                                                    <p className="text-[11px] font-bold text-neutral-200 group-hover:text-white transition-colors">{item.label}</p>
-                                                    <p className="text-[9px] text-neutral-500 mt-0.5">{item.description}</p>
+                                            item.type === 'text' ? (
+                                                <div key={item.id} className="flex items-center justify-between px-4 py-3 rounded-xl bg-neutral-800/40 border border-neutral-700/30">
+                                                    <div className="flex-1 mr-4">
+                                                        <p className="text-[11px] font-bold text-neutral-200">{item.label}</p>
+                                                        <p className="text-[9px] text-neutral-500 mt-0.5">{item.description}</p>
+                                                    </div>
+                                                    <input
+                                                        type="text"
+                                                        value={settings[item.id] || ''}
+                                                        onChange={(e) => updateSettings({ [item.id]: e.target.value })}
+                                                        placeholder="YYYY-MM-DD HH:mm:ss"
+                                                        className="bg-neutral-900/50 border border-neutral-700/50 rounded-lg px-3 py-1.5 text-xs text-blue-400 font-mono outline-none focus:ring-1 focus:ring-blue-500/50 transition-all w-48"
+                                                    />
                                                 </div>
-                                                <div className={`transition-all ${settings[item.id] ? 'text-blue-500' : 'text-neutral-700'}`}>
-                                                    {settings[item.id] ? <CheckCircle2 size={18} /> : <Circle size={18} />}
-                                                </div>
-                                            </button>
+                                            ) : (
+                                                <button
+                                                    key={item.id}
+                                                    onClick={() => toggle(item.id)}
+                                                    className="flex items-center justify-between px-4 py-3 rounded-xl bg-neutral-800/40 border border-neutral-700/30 hover:bg-neutral-800 transition-all text-left group"
+                                                >
+                                                    <div className="flex-1">
+                                                        <p className="text-[11px] font-bold text-neutral-200 group-hover:text-white transition-colors">{item.label}</p>
+                                                        <p className="text-[9px] text-neutral-500 mt-0.5">{item.description}</p>
+                                                    </div>
+                                                    <div className={`transition-all ${settings[item.id] ? 'text-blue-500' : 'text-neutral-700'}`}>
+                                                        {settings[item.id] ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+                                                    </div>
+                                                </button>
+                                            )
                                         ))}
                                     </div>
                                 </div>

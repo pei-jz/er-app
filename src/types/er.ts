@@ -125,6 +125,9 @@ export interface MetadataSettings {
     // Performance
     highPerformanceMode?: boolean;
     disableAnimations?: boolean;
+
+    // Export & SQL Generation
+    exportDateTimeFormat?: string;
 }
 
 export interface DataTypeConfig {

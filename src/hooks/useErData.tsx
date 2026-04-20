@@ -7,6 +7,7 @@ export interface QueryResult {
     has_more: boolean;
     total_count?: number;
     has_uncommitted_changes: boolean;
+    errors?: string[];
 }
 
 export interface SqlLogEntry {
@@ -27,6 +28,7 @@ export interface SqlEditorTab {
     isTransposed: boolean;
     logs: SqlLogEntry[];
     activeBottomTab: 'results' | 'logs';
+    lastExecutedSql?: string;
 }
 
 interface ErSqlContextType {
@@ -121,7 +123,8 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
             error: null,
             isTransposed: false,
             logs: [],
-            activeBottomTab: 'results'
+            activeBottomTab: 'results',
+            lastExecutedSql: ''
         }
     ]);
     const [activeSqlTabId, setActiveSqlTabId] = useState<string>('tab-1');
@@ -139,7 +142,8 @@ export function ErDataProvider({ children, initialData }: { children: ReactNode,
             error: null,
             isTransposed: false,
             logs: [],
-            activeBottomTab: 'results'
+            activeBottomTab: 'results',
+            lastExecutedSql: ''
         };
         setSqlTabs(prev => [...prev, newTab]);
         setActiveSqlTabId(id);

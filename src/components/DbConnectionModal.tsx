@@ -22,7 +22,8 @@ const DbConnectionModal: React.FC<DbConnectionModalProps> = ({ onClose, onImport
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [history, setHistory] = useState<Omit<DbConfig, 'pass'>[]>([]);
-    const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+    const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
+    const [overIndex, setOverIndex] = useState<number | null>(null);
 
     React.useEffect(() => {
         try {
@@ -66,27 +67,38 @@ const DbConnectionModal: React.FC<DbConnectionModalProps> = ({ onClose, onImport
         localStorage.setItem('db_connections_history', JSON.stringify(updated));
     };
 
-    const handleDragStart = (index: number) => {
-        setDraggedIndex(index);
+    React.useEffect(() => {
+        if (draggingIndex === null) return;
+
+        const handleMouseUp = () => {
+            if (overIndex !== null && overIndex !== draggingIndex) {
+                setHistory(prev => {
+                    const updated = [...prev];
+                    const [movedItem] = updated.splice(draggingIndex, 1);
+                    updated.splice(overIndex, 0, movedItem);
+                    localStorage.setItem('db_connections_history', JSON.stringify(updated));
+                    return updated;
+                });
+            }
+            setDraggingIndex(null);
+            setOverIndex(null);
+        };
+
+        window.addEventListener('mouseup', handleMouseUp);
+        return () => {
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [draggingIndex, overIndex]);
+
+    const handleItemMouseDown = (index: number, e: React.MouseEvent) => {
+        if (e.button !== 0) return;
+        setDraggingIndex(index);
     };
 
-    const handleDragOver = (e: React.DragEvent, index: number) => {
-        e.preventDefault();
-        if (draggedIndex === null || draggedIndex === index) return;
-        
-        // Visual indicator of where it will drop could be added here
-    };
-
-    const handleDrop = (index: number) => {
-        if (draggedIndex === null || draggedIndex === index) return;
-        
-        const updated = [...history];
-        const [movedItem] = updated.splice(draggedIndex, 1);
-        updated.splice(index, 0, movedItem);
-        
-        setHistory(updated);
-        localStorage.setItem('db_connections_history', JSON.stringify(updated));
-        setDraggedIndex(null);
+    const handleItemMouseEnter = (index: number) => {
+        if (draggingIndex !== null) {
+            setOverIndex(index);
+        }
     };
 
     const handleConnect = async () => {
@@ -177,22 +189,19 @@ const DbConnectionModal: React.FC<DbConnectionModalProps> = ({ onClose, onImport
                             ) : (
                                 history.map((h, i) => (
                                     <div
-                                        key={i}
-                                        draggable
-                                        onDragStart={() => handleDragStart(i)}
-                                        onDragOver={(e) => handleDragOver(e, i)}
-                                        onDrop={() => handleDrop(i)}
-                                        onDragEnd={() => setDraggedIndex(null)}
-                                        className={`w-full group flex items-center gap-1 px-1 rounded-lg transition-all ${
-                                            draggedIndex === i ? 'opacity-30' : ''
+                                        key={`${h.host}-${h.port}-${h.db_name}-${h.user}-${i}`}
+                                        onMouseDown={(e) => handleItemMouseDown(i, e)}
+                                        onMouseEnter={() => handleItemMouseEnter(i)}
+                                        className={`w-full group flex items-center gap-1 px-1 rounded-lg transition-all select-none cursor-grab active:cursor-grabbing ${
+                                            draggingIndex === i ? 'opacity-30' : overIndex === i ? 'bg-blue-500/10 scale-[1.02]' : ''
                                         }`}
                                     >
-                                        <div className="cursor-grab active:cursor-grabbing p-1 text-neutral-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <div className="p-1 text-neutral-600 opacity-0 group-hover:opacity-100 transition-opacity">
                                             <GripVertical size={12} />
                                         </div>
-                                        <button
-                                            onClick={() => selectFromHistory(h)}
-                                            className={`flex-1 text-left p-2.5 rounded-lg border transition-all flex items-center gap-2.5 ${
+                                        <div
+                                            onClick={(e) => { e.stopPropagation(); selectFromHistory(h); }}
+                                            className={`flex-1 text-left p-2.5 rounded-lg border transition-all flex items-center gap-2.5 cursor-pointer ${
                                                 config.host === h.host && config.db_name === h.db_name && config.user === h.user 
                                                     ? 'bg-blue-600/10 border-blue-500/50' 
                                                     : 'border-transparent hover:bg-neutral-800'
@@ -216,7 +225,7 @@ const DbConnectionModal: React.FC<DbConnectionModalProps> = ({ onClose, onImport
                                             >
                                                 <Trash2 size={12} />
                                             </button>
-                                        </button>
+                                        </div>
                                     </div>
                                 ))
                             )}

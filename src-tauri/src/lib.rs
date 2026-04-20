@@ -164,6 +164,7 @@ async fn import_csv_metadata(
             is_foreign_key: ref_table.is_some(),
             references_table: ref_table,
             references_column: ref_col,
+            comment: None,
             extra,
         };
 
@@ -172,6 +173,7 @@ async fn import_csv_metadata(
 
     Ok(tables_map.into_iter().map(|(name, columns)| TableMetadata {
         name,
+        comment: None,
         columns,
         indices: Vec::new(),
         category_id: None,
@@ -268,65 +270,130 @@ async fn execute_db_query(
             sessions.get(&shared_key).unwrap().clone()
         };
 
-        let last_idx = statements.len() - 1;
-        let mut final_result = None;
-        let mut total_affected = 0;
+        let db_type = config.db_type.clone();
+        
+        let (mut has_uncommitted, manager) = {
+            let entry = session_entry_arc.lock().await;
+            (entry.has_uncommitted_changes, crate::db::get_manager_from_session(&entry.session))
+        };
 
-        for (i, stmt_str) in statements.iter().enumerate() {
-            let stmt = stmt_str.trim().to_string();
-            let is_last = i == last_idx;
-            let s_lower = stmt.to_lowercase();
-            let is_select_stmt = s_lower.starts_with("select") || s_lower.starts_with("show") || s_lower.starts_with("describe") || s_lower.starts_with("explain");
-            let is_transaction_control = s_lower.starts_with("commit") || s_lower.starts_with("rollback");
-            let is_dml = s_lower.starts_with("insert") || s_lower.starts_with("update") || s_lower.starts_with("delete") || s_lower.starts_with("merge") || s_lower.starts_with("create") || s_lower.starts_with("drop") || s_lower.starts_with("alter") || s_lower.starts_with("truncate");
+        let result = process_statements(
+            statements.iter().map(|s| s.to_string()).collect(),
+            manager.as_ref(),
+            &db_type,
+            offset,
+            &mut has_uncommitted,
+        ).await;
+        
+        {
+            let mut entry = session_entry_arc.lock().await;
+            entry.has_uncommitted_changes = has_uncommitted;
+        }
 
-            let res = {
-                let mut entry = session_entry_arc.lock().await;
-                let manager = get_manager_from_session(&entry.session);
-                let res = manager.execute_query(stmt.clone(), offset, is_select_stmt && is_last).await;
-
-                if res.is_ok() {
-                    if is_dml {
-                        entry.has_uncommitted_changes = true;
-                    } else if is_transaction_control {
-                        entry.has_uncommitted_changes = false;
-                    }
-                }
-                res
-            };
-
-            match res {
-                Ok(qr) => {
-                    total_affected += qr.total_count.unwrap_or(0);
-                    if is_last {
-                        let mut final_qr = qr;
-                        let entry = session_entry_arc.lock().await;
-                        final_qr.has_uncommitted_changes = entry.has_uncommitted_changes;
-                        final_result = Some(final_qr);
-                    }
-                },
-                Err(e) => {
+        match result {
+            Ok(r) => return Ok(r),
+            Err((e, is_fatal)) => {
+                if is_fatal {
+                    let mut sessions = state.sessions.lock().await;
+                    sessions.remove(&shared_key);
                     if e.contains("DPI-1010") && retry_count < 1 {
-                        let mut sessions = state.sessions.lock().await;
-                        sessions.remove(&shared_key);
                         retry_count += 1;
                         continue 'retry; 
                     }
-                    return Err(format!("Error in statement [{}]: {}", stmt, e));
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+async fn process_statements(
+    statements: Vec<String>,
+    manager: &dyn crate::db::DatabaseManager,
+    db_type: &str,
+    offset: i64,
+    has_uncommitted_changes: &mut bool,
+) -> Result<QueryResult, (String, bool)> {
+    let last_idx = statements.len() - 1;
+    let mut final_result = None;
+    let mut total_affected = 0;
+    let mut errors = Vec::new();
+
+    for (i, stmt_str) in statements.iter().enumerate() {
+        let stmt = stmt_str.trim().to_string();
+        let is_last = i == last_idx;
+        let s_lower = stmt.to_lowercase();
+        let is_select_stmt = s_lower.starts_with("select") || s_lower.starts_with("show") || s_lower.starts_with("describe") || s_lower.starts_with("explain");
+        let is_transaction_control = s_lower.starts_with("commit") || s_lower.starts_with("rollback");
+        let is_dml = s_lower.starts_with("insert") || s_lower.starts_with("update") || s_lower.starts_with("delete") || s_lower.starts_with("merge") || s_lower.starts_with("create") || s_lower.starts_with("drop") || s_lower.starts_with("alter") || s_lower.starts_with("truncate");
+
+        let res = {
+            let res = manager.execute_query(stmt.clone(), offset, is_select_stmt && is_last).await;
+
+            if res.is_ok() {
+                if is_dml {
+                    *has_uncommitted_changes = true;
+                } else if is_transaction_control {
+                    *has_uncommitted_changes = false;
+                }
+            }
+            res
+        };
+
+        match res {
+            Ok(qr) => {
+                total_affected += qr.total_count.unwrap_or(0);
+                if is_last || is_select_stmt {
+                    let mut final_qr = qr;
+                    final_qr.has_uncommitted_changes = *has_uncommitted_changes;
+                    final_result = Some(final_qr);
+                }
+            },
+            Err(e) => {
+                let e_lower = e.to_lowercase();
+                let is_fatal = e_lower.contains("dpi-1010") || 
+                               e_lower.contains("connection refused") || 
+                               e_lower.contains("broken pipe") || 
+                               e_lower.contains("closed") ||
+                               e_lower.contains("timeout") ||
+                               e_lower.contains("not connected");
+
+                if is_fatal {
+                    return Err((format!("Fatal error in statement [{}]: {}", stmt, e), true));
+                }
+
+                errors.push(format!("Error in statement [{}]: {}", stmt, e));
+
+                if db_type == "postgres" {
+                    // Postgres cannot continue after an error in a transaction. Rollback and abort batch.
+                    let _ = manager.rollback().await;
+                    *has_uncommitted_changes = false;
+                    break;
                 }
             }
         }
-
-        if let Some(mut r) = final_result {
-            if r.total_count.is_some() && total_affected > r.total_count.unwrap() {
-                r.total_count = Some(total_affected);
-            }
-            let entry = session_entry_arc.lock().await;
-            r.has_uncommitted_changes = entry.has_uncommitted_changes;
-            return Ok(r);
-        }
-        return Err("Execution failed to produce a result".to_string());
     }
+
+    let mut r = final_result.unwrap_or_else(|| QueryResult {
+        columns: vec![],
+        rows: vec![],
+        has_more: false,
+        total_count: Some(total_affected),
+        has_uncommitted_changes: false,
+        errors: None,
+    });
+
+    if r.total_count.is_some() && total_affected > r.total_count.unwrap() {
+        r.total_count = Some(total_affected);
+    }
+    
+    r.has_uncommitted_changes = *has_uncommitted_changes;
+    
+    if !errors.is_empty() {
+        r.errors = Some(errors);
+    }
+
+    Ok(r)
 }
 
 #[tauri::command]
@@ -401,4 +468,127 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    struct MockDbManager {
+        pub execute_results: Arc<AsyncMutex<Vec<Result<QueryResult, String>>>>,
+        pub rollback_called: Arc<AsyncMutex<bool>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::db::DatabaseManager for MockDbManager {
+        async fn fetch_metadata(&self, _db_name: &str) -> Result<Vec<TableMetadata>, String> { Ok(vec![]) }
+        async fn fetch_table_columns(&self, _db_name: &str, _table_name: &str) -> Result<TableMetadata, String> { Err("".to_string()) }
+        async fn fetch_catalog(&self) -> Result<Vec<DbObject>, String> { Ok(vec![]) }
+        async fn explain_plan(&self, _sql: String) -> Result<String, String> { Ok("".to_string()) }
+        async fn commit(&self) -> Result<(), String> { Ok(()) }
+        
+        async fn execute_query(&self, _sql: String, _offset: i64, _is_select: bool) -> Result<QueryResult, String> {
+            let mut results = self.execute_results.lock().await;
+            if results.is_empty() {
+                return Ok(QueryResult { columns: vec![], rows: vec![], has_more: false, total_count: Some(1), has_uncommitted_changes: true, errors: None });
+            }
+            results.remove(0)
+        }
+        
+        async fn rollback(&self) -> Result<(), String> {
+            *self.rollback_called.lock().await = true;
+            Ok(())
+        }
+    }
+
+    fn create_mock(results: Vec<Result<QueryResult, String>>) -> (MockDbManager, Arc<AsyncMutex<bool>>) {
+        let rollback_called = Arc::new(AsyncMutex::new(false));
+        (MockDbManager {
+            execute_results: Arc::new(AsyncMutex::new(results)),
+            rollback_called: rollback_called.clone(),
+        }, rollback_called)
+    }
+
+    #[tokio::test]
+    async fn test_process_statements_all_success() {
+        let (mock, _) = create_mock(vec![
+            Ok(QueryResult { columns: vec![], rows: vec![], has_more: false, total_count: Some(1), has_uncommitted_changes: false, errors: None }),
+            Ok(QueryResult { columns: vec![], rows: vec![], has_more: false, total_count: Some(1), has_uncommitted_changes: false, errors: None }),
+        ]);
+        let mut has_uncommitted = false;
+        let stmts = vec!["INSERT 1".to_string(), "INSERT 2".to_string()];
+        
+        let result = process_statements(stmts, &mock, "oracle", 0, &mut has_uncommitted).await;
+        assert!(result.is_ok());
+        let res = result.unwrap();
+        assert_eq!(res.total_count, Some(2));
+        assert!(res.errors.is_none());
+        assert_eq!(has_uncommitted, true); // because INSERT is DML
+    }
+
+    #[tokio::test]
+    async fn test_process_statements_oracle_continue() {
+        let (mock, rollback_called) = create_mock(vec![
+            Err("ORA-00001: unique constraint violated".to_string()),
+            Ok(QueryResult { columns: vec![], rows: vec![], has_more: false, total_count: Some(1), has_uncommitted_changes: true, errors: None }),
+        ]);
+        let mut has_uncommitted = false;
+        let stmts = vec!["INSERT 1".to_string(), "INSERT 2".to_string()];
+        
+        let result = process_statements(stmts, &mock, "oracle", 0, &mut has_uncommitted).await;
+        assert!(result.is_ok());
+        let res = result.unwrap();
+        
+        // Total count should be 1 because the first failed, the second succeeded
+        assert_eq!(res.total_count, Some(1));
+        
+        // Errors should contain the ORA error
+        assert!(res.errors.is_some());
+        assert_eq!(res.errors.unwrap().len(), 1);
+        
+        // Oracle shouldn't rollback automatically on non-fatal error
+        assert_eq!(*rollback_called.lock().await, false);
+    }
+
+    #[tokio::test]
+    async fn test_process_statements_postgres_rollback() {
+        let (mock, rollback_called) = create_mock(vec![
+            Err("syntax error".to_string()),
+            Ok(QueryResult { columns: vec![], rows: vec![], has_more: false, total_count: Some(1), has_uncommitted_changes: true, errors: None }),
+        ]);
+        let mut has_uncommitted = false;
+        let stmts = vec!["INSERT 1".to_string(), "INSERT 2".to_string()];
+        
+        let result = process_statements(stmts, &mock, "postgres", 0, &mut has_uncommitted).await;
+        assert!(result.is_ok());
+        let res = result.unwrap();
+        
+        // Postgres should abort on first error, so total count is 0
+        assert_eq!(res.total_count, Some(0));
+        
+        // Errors should contain the syntax error
+        assert!(res.errors.is_some());
+        assert_eq!(res.errors.unwrap().len(), 1);
+        
+        // Postgres SHOULD rollback automatically on non-fatal error
+        assert_eq!(*rollback_called.lock().await, true);
+        assert_eq!(has_uncommitted, false); // Rolled back, no uncommitted changes
+    }
+
+    #[tokio::test]
+    async fn test_process_statements_fatal_error() {
+        let (mock, _) = create_mock(vec![
+            Err("DPI-1010: not connected".to_string()),
+        ]);
+        let mut has_uncommitted = false;
+        let stmts = vec!["INSERT 1".to_string(), "INSERT 2".to_string()];
+        
+        let result = process_statements(stmts, &mock, "oracle", 0, &mut has_uncommitted).await;
+        assert!(result.is_err());
+        let (err_msg, is_fatal) = result.unwrap_err();
+        assert!(is_fatal);
+        assert!(err_msg.contains("DPI-1010"));
+    }
 }
