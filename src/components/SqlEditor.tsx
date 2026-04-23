@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Database, Play, ChevronLeft, ChevronRight, AlertCircle, Terminal, ArrowRightLeft, Table, Columns } from 'lucide-react';
+import { Database, Play, ChevronLeft, ChevronRight, AlertCircle, Terminal, ArrowRightLeft, Columns } from 'lucide-react';
 import { invoke } from "@tauri-apps/api/core";
 import { format } from "sql-formatter";
-import { ErDiagramData, DbConfig } from '../types/er';
+import { ErDiagramData, DbConfig, ColumnMetadata, TableMetadata } from '../types/er';
 import { useErSql, useErSqlActions, SqlEditorTab, QueryResult, SqlLogEntry } from '../hooks/useErData';
 import { DbObject } from './Sidebar';
 import ResultsTable from './ResultsTable';
@@ -537,7 +537,7 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
             });
             const durationMs = Date.now() - startTime;
             const hasErrors = res.errors && res.errors.length > 0;
-            const errorStr = hasErrors ? res.errors.join('\n') : undefined;
+            const errorStr = hasErrors ? res.errors?.join('\n') : undefined;
 
             const newLog: SqlLogEntry = {
                 time: new Date().toLocaleTimeString(),
@@ -669,8 +669,6 @@ export default function SqlEditor({ data, dbConfig, onOpenDbConnect, isSidebarOp
             type: 'table' | 'column' | 'keyword' | 'join';
         }
 
-        const lowerSql = currentSql.toLowerCase();
-        
         // Identify current SQL block (delimited by ;) - Optimized for large SQL
         const lastSemicolon = currentSql.lastIndexOf(';', pos - 1);
         const nextSemicolon = currentSql.indexOf(';', pos);

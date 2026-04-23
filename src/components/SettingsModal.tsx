@@ -16,7 +16,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         updateSettings({ [key]: !settings[key] });
     };
 
-    const sections = [
+    interface SettingsItem {
+        id: string;
+        label: string;
+        description: string;
+        type?: string;
+    }
+
+    const sections: { title: string; icon: React.ReactNode; items: SettingsItem[] }[] = [
         {
             title: 'Table Metadata',
             icon: <Database size={14} />,

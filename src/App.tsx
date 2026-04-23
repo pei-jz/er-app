@@ -20,6 +20,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { generateFullDdl, generateDiffDdl, generateTableDdl } from "./utils/ddlGenerator";
 import { ReactFlowProvider } from "@xyflow/react";
 import { PanelLeftOpen } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const GlobalKeyboardShortcuts = ({ onSave, setCurrentView }: { onSave: () => void, setCurrentView: (v: AppView) => void }) => {
     const { addSqlTab } = useErSqlActions();
@@ -85,6 +86,9 @@ function App() {
           .catch(e => console.error("Failed to auto-load associated file:", e));
       }
     }).catch(console.error);
+
+    // Show window when the app is ready to prevent white flash
+    getCurrentWindow().show();
   }, []);
 
   const handleRefreshDb = async (overrideConfig?: DbConfig, forceLiveDbMode?: boolean) => {
